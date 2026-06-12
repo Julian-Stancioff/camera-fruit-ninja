@@ -6,6 +6,7 @@ import { Effects } from "./rendering/effects.js";
 import { Game } from "./game/Game.js";
 import { Fruit } from "./game/Fruit.js";
 import { bladeSpeed } from "./game/slice.js";
+import { OneEuroFilter } from "./tracking/OneEuroFilter.js";
 import * as sfx from "./audio/sfx.js";
 
 const $ = (id) => document.getElementById(id);
@@ -21,23 +22,25 @@ let lastTickTs = 0;
 let fps = 0, lastFrameTs = 0;
 let showSkeleton = false;
 
-// blade state (screen px)
-let bladeRawPrev = null, bladeUsedPrev = null, bladeCur = null;
-let lastHandTs = 0;
-const trail = [];
-const TRAIL_MS = 150;
-// Tunable feel — overridable via URL (?gain=2.1&lead=0.7&debug) so we can dial it
-// in on the live site without a redeploy.
+// Tunable feel — overridable via URL (?gain=2.2&mincut=1.0&beta=0.02&debug) so we
+// can dial it in on the live site without a redeploy.
 const PARAMS = new URLSearchParams(location.search);
 const DEBUG = PARAMS.has("debug");
-// Gain expands a comfortable hand range to the FULL screen: reach the edges with
-// modest motion + makes the blade feel faster (more screen travel per hand move).
-const GAIN_X = parseFloat(PARAMS.get("gainx") || PARAMS.get("gain") || "2.0");
+// Gain expands a comfortable hand range to the full screen: reach the edges with
+// modest motion + more screen travel per hand move (feels faster).
+const GAIN_X = parseFloat(PARAMS.get("gainx") || PARAMS.get("gain") || "1.8");
 const GAIN_Y = parseFloat(PARAMS.get("gainy") || PARAMS.get("gain") || "1.8");
-// Lead the blade ahead along its motion to cancel pipeline lag (speed-scaled, so
-// no jitter at rest).
-const LEAD = parseFloat(PARAMS.get("lead") || "0.65");
-const LEAD_CAP = 320; // px cap so a huge jump can't overshoot wildly
+// 1€ filter in PIXEL space: smooth at rest (kills jitter), responsive in motion.
+const MINCUT = parseFloat(PARAMS.get("mincut") || "1.2");
+const BETA = parseFloat(PARAMS.get("beta") || "0.012");
+
+// blade state (screen px)
+let bladePrev = null, bladeCur = null;
+let lastHandTs = 0, lastDetectTs = 0;
+const trail = [];
+const TRAIL_MS = 150;
+const cursorFX = new OneEuroFilter(30, MINCUT, BETA);
+const cursorFY = new OneEuroFilter(30, MINCUT, BETA);
 
 const HAND_CONNECTIONS = [
   [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
@@ -161,47 +164,40 @@ function flashBad() {
 }
 
 // ---------- loop ----------
+// rAF render loop → smooth 60fps fruit + trail. Hand detection runs only on a new
+// camera frame (~30fps) via the currentTime guard inside tick(), so the game never
+// looks choppy even though the camera is 30fps.
 function startLoop() {
-  if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
-    const onFrame = (now) => { if (!running) return; tick(now, true); video.requestVideoFrameCallback(onFrame); };
-    video.requestVideoFrameCallback(onFrame);
-  } else {
-    const onRaf = () => { if (!running) return; tick(performance.now(), false); requestAnimationFrame(onRaf); };
-    requestAnimationFrame(onRaf);
-  }
+  const onRaf = (now) => { if (!running) return; tick(now); requestAnimationFrame(onRaf); };
+  requestAnimationFrame(onRaf);
 }
 
-function tick(now, rvfc) {
-  const dt = lastTickTs ? (now - lastTickTs) / 1000 : 0.016;
-  const dtMs = lastTickTs ? now - lastTickTs : 16;
+function tick(now) {
+  const dt = lastTickTs ? Math.min((now - lastTickTs) / 1000, 0.05) : 0.016;
   lastTickTs = now;
 
   let segment = null;
-  const isNewFrame = rvfc || video.currentTime !== lastVideoTime;
-  if (isNewFrame) {
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
+    const dtMs = lastDetectTs ? now - lastDetectTs : 33;
+    const freq = dtMs > 0 ? 1000 / dtMs : 30;
+    lastDetectTs = now;
+
     const result = tracker.detect(video, now);
-    updateHud(result, now);
+    if (DEBUG) updateHud(result, now);
     lastResult = result;
 
-    const cur = result.present && result.blade ? mapPoint(result.blade.x, result.blade.y) : null;
-    let used = null;
-    if (cur) {
-      lastHandTs = now;
-      if (bladeRawPrev) {
-        let lx = cur.x - bladeRawPrev.x, ly = cur.y - bladeRawPrev.y;
-        const m = Math.hypot(lx, ly);
-        if (m > LEAD_CAP) { lx *= LEAD_CAP / m; ly *= LEAD_CAP / m; }
-        used = { x: cur.x + lx * LEAD, y: cur.y + ly * LEAD };
-      } else used = cur;
+    if (result.present && result.blade) {
+      const raw = mapPoint(result.blade.x, result.blade.y);
+      // Smooth in pixel space: clean cursor → clean slice segments → reliable cuts.
+      const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
+      if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
+      trail.push({ x: cur.x, y: cur.y, t: now });
+      bladePrev = cur; bladeCur = cur; lastHandTs = now;
+    } else {
+      cursorFX.reset(); cursorFY.reset();
+      bladePrev = null; bladeCur = null;
     }
-    if (used && bladeUsedPrev) {
-      segment = { a: bladeUsedPrev, b: used, speed: bladeSpeed(bladeUsedPrev, used, dtMs) };
-    }
-    if (used) trail.push({ x: used.x, y: used.y, t: now });
-    bladeRawPrev = cur;     // raw smoothed point, drives next lead; null on hand loss
-    bladeUsedPrev = used;   // led point, drives the slice segment
-    bladeCur = used;
     updateHandHint(now);
   }
   while (trail.length && now - trail[0].t > TRAIL_MS) trail.shift();

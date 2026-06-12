@@ -6,7 +6,7 @@ import { FruitSpawner } from "./FruitSpawner.js";
 import { ScoreManager } from "./ScoreManager.js";
 import { segmentHitsCircle } from "./slice.js";
 
-const SPEED_GATE = 430; // px/s: fingertip must be moving this fast to cut
+const SPEED_GATE = 280; // px/s: deliberate (even gentle) cuts register; smooth cursor avoids false cuts at rest
 const HIT_MARGIN = 1.18; // forgiving slice radius (camera tracking isn't pixel-perfect)
 
 export class Game {
@@ -41,7 +41,7 @@ export class Game {
    */
   update(dt, segment) {
     const w = this.scene.w, h = this.scene.h;
-    const gravity = h * 2.0;
+    const gravity = h * 1.8; // a touch floatier → more hang time, easier to cut
     dt = Math.min(dt, 0.05); // clamp big hitches so physics stay sane
 
     if (this.playing) {

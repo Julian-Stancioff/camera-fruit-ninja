@@ -8,13 +8,13 @@ const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 export class FruitSpawner {
   constructor() {
     this.timer = 0;
-    this.nextIn = 0.8;
+    this.nextIn = 1.3; // gentle start — give the player a moment to orient
   }
 
-  // Interval shrinks as score climbs (1100ms → ~480ms by score ~60).
+  // Interval shrinks as score climbs: slow start (~1.7s) → busy (~0.55s) by score ~70.
   _interval(score) {
-    const t = Math.min(1, score / 60);
-    return rand(0.95, 1.25) * (1.1 - 0.62 * t);
+    const t = Math.min(1, score / 70);
+    return rand(0.9, 1.1) * (1.7 - 1.15 * t);
   }
 
   /** Advance time; return an array of spawn specs (possibly empty). */
@@ -27,15 +27,20 @@ export class FruitSpawner {
   }
 
   _wave(score, w, h, gravity) {
-    const count = Math.random() < 0.5 ? 1 : Math.random() < 0.8 ? 2 : 3;
-    const bombChance = Math.min(0.18, 0.06 + score / 600);
+    // Fruit-per-wave grows with score: ~1 early, up to ~5 late.
+    const t = Math.min(1, score / 80);
+    const maxCount = 1 + Math.round(4 * t); // 1 → 5
+    let count = 1;
+    for (let k = 1; k < maxCount; k++) if (Math.random() < 0.4 + 0.3 * t) count++;
+
+    const bombChance = Math.min(0.16, 0.03 + score / 700);
     const baseR = Math.min(w, h) * 0.064;
     const specs = [];
     let bombs = 0;
     for (let i = 0; i < count; i++) {
       let type = pick(FRUIT_TYPES);
-      // Allow at most one bomb per wave, never the very first spawns.
-      if (score > 4 && bombs === 0 && Math.random() < bombChance) { type = "bomb"; bombs++; }
+      // Allow at most one bomb per wave, never in the early game.
+      if (score > 6 && bombs === 0 && Math.random() < bombChance) { type = "bomb"; bombs++; }
       const radius = type === "watermelon" ? baseR * 1.35
         : type === "bomb" ? baseR * 1.0 : baseR * rand(0.82, 1.05);
 
