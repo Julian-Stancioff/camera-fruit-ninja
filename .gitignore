@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+*.env
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Large model assets are committed deliberately (see docs); nothing to ignore yet.
+
+# Gas Town (added by gt)
+.runtime/
+.logs/
+.beads/
+state.json
+config.yaml
+AGENTS.md
+PRIME.md
+CLAUDE.local.md
