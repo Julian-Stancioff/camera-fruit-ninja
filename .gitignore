@@ -24,7 +24,10 @@ npm-debug.log*
 .vscode/
 .idea/
 
-# Large model assets are committed deliberately (see docs); nothing to ignore yet.
+# Large MediaPipe binaries: regenerated at build time by scripts/fetch-assets.mjs
+# (keeps the repo lean; the deployed app still self-hosts them from its own origin).
+client/public/models/
+client/public/mediapipe/
 
 # Gas Town (added by gt)
 .runtime/

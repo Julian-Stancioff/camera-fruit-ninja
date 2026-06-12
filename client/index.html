@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1a1208" />
+  <title>Camera Fruit Ninja</title>
+  <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'&gt;&lt;text y='26' font-size='26'&gt;🍉&lt;/text&gt;&lt;/svg&gt;" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="dojo"></div>
+  <video id="webcam" playsinline muted></video>
+  <canvas id="game-canvas"></canvas>
+  <canvas id="overlay"></canvas>
+
+  <!-- Game HUD -->
+  <div id="game-hud" hidden>
+    <div id="strikes" aria-label="lives"></div>
+    <div id="score">0</div>
+    <div id="combo"></div>
+  </div>
+
+  <!-- Debug HUD -->
+  <div id="hud" hidden>
+    <div class="hud-row">
+      <span class="hud-pill" id="hud-track">● searching…</span>
+      <span class="hud-pill" id="hud-fps">– fps</span>
+      <span class="hud-pill" id="hud-delegate">–</span>
+    </div>
+    <div class="hud-row hud-controls">
+      <label class="hud-toggle"><input type="checkbox" id="toggle-skeleton" /> Skeleton</label>
+      <label class="hud-toggle"><input type="checkbox" id="toggle-camera" checked /> Camera</label>
+    </div>
+  </div>
+
+  <!-- Start gate -->
+  <div id="start-screen">
+    <div class="start-card">
+      <div class="start-emoji">🍉🔪</div>
+      <h1>Camera Fruit Ninja</h1>
+      <p class="start-sub">Slice the fruit with your hand — your <strong>index fingertip</strong> is the blade.
+        Swipe fast to cut, dodge the <strong>bombs</strong>, and don't let fruit fall.</p>
+      <button id="start-btn">Start camera</button>
+      <p class="start-note" id="start-note">Allow camera access when asked. Everything runs on your device — nothing is uploaded.</p>
+    </div>
+  </div>
+
+  <!-- Game over -->
+  <div id="gameover" hidden>
+    <div class="over-card">
+      <h2 id="over-title">Game Over</h2>
+      <p id="over-reason"></p>
+      <div class="over-scores">
+        <div><span class="over-num" id="over-score">0</span><span class="over-lbl">Score</span></div>
+        <div><span class="over-num" id="over-best">0</span><span class="over-lbl">Best</span></div>
+      </div>
+      <button id="again-btn">Play again</button>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+:root {
+  --wood-1: #2a1c0d;
+  --wood-2: #160e05;
+  --blade: #fff6d8;
+  --accent: #ffd24a;
+  --good: #6fe06f;
+  --bad: #ff5a5a;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--wood-2); }
+body {
+  font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+  color: #fff;
+  -webkit-user-select: none; user-select: none; touch-action: none;
+}
+
+/* ---------- dojo background ---------- */
+#dojo {
+  position: fixed; inset: 0; z-index: 0;
+  background:
+    radial-gradient(120% 80% at 50% -5%, rgba(255, 224, 158, 0.22), transparent 55%),
+    repeating-linear-gradient(90deg, #6b4a24 0 38px, #5d3f1f 38px 41px, #69481f 41px 78px, #523818 78px 81px),
+    linear-gradient(180deg, #6e4d26 0%, #4a3318 55%, #2e1f0e 100%);
+  box-shadow: inset 0 0 260px rgba(0, 0, 0, 0.65);
+}
+
+/* webcam: small mirrored picture-in-picture for hand orientation */
+#webcam {
+  position: fixed; inset: auto 16px 16px auto;
+  width: 200px; height: 150px;
+  object-fit: cover; transform: scaleX(-1);
+  border-radius: 12px; border: 2px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  background: #000; z-index: 4;
+  transition: opacity 0.2s;
+}
+#webcam.cam-off { opacity: 0; pointer-events: none; }
+
+#game-canvas { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 1; }
+#overlay { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+
+/* ---------- game HUD ---------- */
+#game-hud { position: fixed; inset: 0; z-index: 6; pointer-events: none; }
+#score {
+  position: absolute; top: 14px; left: 20px;
+  font-size: 3rem; font-weight: 800; color: var(--accent);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.45), 0 0 18px rgba(255, 210, 74, 0.3);
+}
+#strikes {
+  position: absolute; top: 20px; right: 20px;
+  display: flex; gap: 8px;
+}
+.strike {
+  font-size: 2rem; line-height: 1; color: #5a3a1a;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.4);
+  transition: transform 0.2s, color 0.2s;
+}
+.strike.lost { color: var(--bad); transform: scale(1.15); text-shadow: 0 0 16px rgba(255, 90, 90, 0.7); }
+#combo {
+  position: absolute; top: 30%; left: 50%; transform: translate(-50%, -50%) scale(0.6);
+  font-size: 3.4rem; font-weight: 900; color: #fff;
+  text-shadow: 0 3px 0 #b9881f, 0 0 26px rgba(255, 210, 74, 0.8);
+  opacity: 0; transition: opacity 0.12s;
+}
+#combo.show { animation: comboPop 0.85s ease-out forwards; }
+@keyframes comboPop {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5) rotate(-6deg); }
+  25% { opacity: 1; transform: translate(-50%, -50%) scale(1.15) rotate(3deg); }
+  70% { opacity: 1; transform: translate(-50%, -55%) scale(1) rotate(0); }
+  100% { opacity: 0; transform: translate(-50%, -75%) scale(1); }
+}
+
+/* red flash on bomb / miss */
+#overlay.flash-bad { animation: flashBad 0.4s ease-out; }
+@keyframes flashBad { 0% { background: rgba(255,0,0,0.0); } 25% { background: rgba(255,0,0,0.32); } 100% { background: rgba(255,0,0,0); } }
+
+/* ---------- debug HUD (bottom-left) ---------- */
+#hud { position: fixed; bottom: 12px; left: 12px; z-index: 6; display: flex; flex-direction: column; gap: 8px; }
+.hud-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.hud-pill, .hud-toggle {
+  background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px; padding: 4px 11px; font-size: 0.78rem; font-weight: 600;
+  backdrop-filter: blur(4px);
+}
+.hud-toggle { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+#hud-track.lost { color: var(--bad); }
+#hud-track.ok { color: var(--good); }
+
+/* ---------- start + gameover cards ---------- */
+#start-screen, #gameover {
+  position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 24px;
+  background: radial-gradient(1200px 800px at 50% -10%, rgba(58,40,20,0.6) 0%, transparent 60%),
+              rgba(10, 6, 2, 0.55);
+  backdrop-filter: blur(3px);
+}
+#start-screen.gone, #gameover[hidden] { display: none; }
+.start-card, .over-card {
+  max-width: 460px; text-align: center;
+  background: rgba(20, 12, 4, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 20px;
+  padding: 38px 32px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+.start-emoji { font-size: 3rem; letter-spacing: 6px; }
+.start-card h1, .over-card h2 { margin: 12px 0 8px; color: var(--accent); text-shadow: 0 2px 0 rgba(0,0,0,0.4); }
+.start-card h1 { font-size: 2.2rem; }
+.over-card h2 { font-size: 2.4rem; }
+.start-sub { margin: 0 0 24px; color: #f3e7cf; line-height: 1.5; }
+#over-reason { color: #f3e7cf; margin: 0 0 18px; }
+.over-scores { display: flex; justify-content: center; gap: 40px; margin: 8px 0 26px; }
+.over-num { display: block; font-size: 2.6rem; font-weight: 800; color: #fff; }
+.over-lbl { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: #cdbfa6; }
+button#start-btn, button#again-btn {
+  font: inherit; font-size: 1.2rem; font-weight: 700; color: #2a1c0d;
+  background: linear-gradient(180deg, #ffe27a, var(--accent));
+  border: none; border-radius: 999px; padding: 15px 40px; cursor: pointer;
+  box-shadow: 0 6px 0 #b9881f, 0 10px 24px rgba(0, 0, 0, 0.4);
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+button#start-btn:hover, button#again-btn:hover { transform: translateY(-1px); }
+button#start-btn:active, button#again-btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #b9881f; }
+button#start-btn:disabled { opacity: 0.7; cursor: default; }
+.start-note { margin: 20px 0 0; font-size: 0.82rem; color: #cdbfa6; line-height: 1.45; }
+.start-note.error { color: var(--bad); font-weight: 600; }
+
+@media (max-width: 520px) {
+  #webcam { width: 120px; height: 90px; }
+  #score { font-size: 2.2rem; }
+  .strike { font-size: 1.5rem; }
+  #combo { font-size: 2.4rem; }
+}
