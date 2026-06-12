@@ -29,7 +29,7 @@ export class FruitSpawner {
   _wave(score, w, h, gravity) {
     const count = Math.random() < 0.5 ? 1 : Math.random() < 0.8 ? 2 : 3;
     const bombChance = Math.min(0.18, 0.06 + score / 600);
-    const baseR = Math.min(w, h) * 0.055;
+    const baseR = Math.min(w, h) * 0.064;
     const specs = [];
     let bombs = 0;
     for (let i = 0; i < count; i++) {

@@ -22,9 +22,15 @@ let fps = 0, lastFrameTs = 0;
 let showSkeleton = false;
 
 // blade state (screen px)
-let bladePrev = null, bladeCur = null;
+let bladeRawPrev = null, bladeUsedPrev = null, bladeCur = null;
+let lastHandTs = 0;
 const trail = [];
 const TRAIL_MS = 150;
+// Lead the blade ahead along its own motion to cancel tracking/pipeline lag.
+// Scales with speed (lots of lead when swiping, none when still → no rest jitter).
+const LEAD = 0.55;
+const LEAD_CAP = 150; // px cap so a big jump can't overshoot wildly
+const DEBUG = new URLSearchParams(location.search).has("debug");
 
 const HAND_CONNECTIONS = [
   [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
@@ -87,7 +93,7 @@ async function start() {
     sfx.resume();
     $("start-screen").classList.add("gone");
     $("game-hud").hidden = false;
-    $("hud").hidden = false;
+    if (DEBUG) $("hud").hidden = false; // dev HUD only with ?debug
     resetHud();
     running = true;
     game.start();
@@ -170,12 +176,24 @@ function tick(now, rvfc) {
     lastResult = result;
 
     const cur = result.present && result.blade ? mapPoint(result.blade.x, result.blade.y) : null;
-    if (cur && bladePrev) {
-      segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
+    let used = null;
+    if (cur) {
+      lastHandTs = now;
+      if (bladeRawPrev) {
+        let lx = cur.x - bladeRawPrev.x, ly = cur.y - bladeRawPrev.y;
+        const m = Math.hypot(lx, ly);
+        if (m > LEAD_CAP) { lx *= LEAD_CAP / m; ly *= LEAD_CAP / m; }
+        used = { x: cur.x + lx * LEAD, y: cur.y + ly * LEAD };
+      } else used = cur;
     }
-    if (cur) trail.push({ x: cur.x, y: cur.y, t: now });
-    bladePrev = cur;       // null on hand loss → next reacquire won't draw a giant segment
-    bladeCur = cur;
+    if (used && bladeUsedPrev) {
+      segment = { a: bladeUsedPrev, b: used, speed: bladeSpeed(bladeUsedPrev, used, dtMs) };
+    }
+    if (used) trail.push({ x: used.x, y: used.y, t: now });
+    bladeRawPrev = cur;     // raw smoothed point, drives next lead; null on hand loss
+    bladeUsedPrev = used;   // led point, drives the slice segment
+    bladeCur = used;
+    updateHandHint(now);
   }
   while (trail.length && now - trail[0].t > TRAIL_MS) trail.shift();
 
@@ -195,6 +213,12 @@ function updateHud(result, now) {
   else { t.textContent = "● searching…"; t.className = "hud-pill lost"; }
 }
 
+// Centered prompt when the camera can't see a hand mid-game.
+function updateHandHint(now) {
+  const show = game && game.playing && now - lastHandTs > 700;
+  $("hand-hint").classList.toggle("show", show);
+}
+
 // ---------- 2D overlay: blade trail + debug skeleton ----------
 function drawOverlay(now) {
   octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
@@ -211,9 +235,9 @@ function drawTrail(now) {
   for (let i = 1; i < trail.length; i++) {
     const a = trail[i - 1], b = trail[i];
     const k = Math.max(0, 1 - (now - b.t) / TRAIL_MS);
-    octx.shadowBlur = 16 * k;
-    octx.lineWidth = 2 + 16 * k;
-    octx.strokeStyle = `rgba(255, 250, 230, ${0.15 + 0.75 * k})`;
+    octx.shadowBlur = 18 * k;
+    octx.lineWidth = 3 + 22 * k;
+    octx.strokeStyle = `rgba(255, 250, 230, ${0.18 + 0.78 * k})`;
     octx.beginPath(); octx.moveTo(a.x, a.y); octx.lineTo(b.x, b.y); octx.stroke();
   }
   octx.restore();
@@ -222,9 +246,9 @@ function drawTrail(now) {
 function drawTip() {
   if (!bladeCur) return;
   octx.save();
-  octx.shadowColor = "rgba(255, 210, 74, 0.95)"; octx.shadowBlur = 22;
+  octx.shadowColor = "rgba(255, 210, 74, 0.95)"; octx.shadowBlur = 26;
   octx.fillStyle = "#fff6d8";
-  octx.beginPath(); octx.arc(bladeCur.x, bladeCur.y, 9, 0, Math.PI * 2); octx.fill();
+  octx.beginPath(); octx.arc(bladeCur.x, bladeCur.y, 11, 0, Math.PI * 2); octx.fill();
   octx.restore();
 }
 

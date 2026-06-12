@@ -6,7 +6,8 @@ import { FruitSpawner } from "./FruitSpawner.js";
 import { ScoreManager } from "./ScoreManager.js";
 import { segmentHitsCircle } from "./slice.js";
 
-const SPEED_GATE = 520; // px/s: fingertip must be moving this fast to cut
+const SPEED_GATE = 430; // px/s: fingertip must be moving this fast to cut
+const HIT_MARGIN = 1.18; // forgiving slice radius (camera tracking isn't pixel-perfect)
 
 export class Game {
   constructor(scene, effects, callbacks = {}) {
@@ -58,7 +59,7 @@ export class Game {
       f.update(dt, gravity);
 
       if (slicing && !f.sliced &&
-          segmentHitsCircle(segment.a.x, segment.a.y, segment.b.x, segment.b.y, f.x, f.y, f.radius)) {
+          segmentHitsCircle(segment.a.x, segment.a.y, segment.b.x, segment.b.y, f.x, f.y, f.radius * HIT_MARGIN)) {
         this._slice(f, i);
         continue;
       }

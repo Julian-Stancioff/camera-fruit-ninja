@@ -14,8 +14,11 @@ export class HandTracker {
     this.landmarker = null;
     this.delegate = null;
     this.lastTs = 0;
-    this.filterX = new OneEuroFilter(30, 1.0, 0.007);
-    this.filterY = new OneEuroFilter(30, 1.0, 0.007);
+    // NOTE: we filter NORMALIZED (0..1) coords, so the speed term `beta` must be
+    // ~100x larger than the pixel-space values quoted in most 1€ examples, or it
+    // never engages and the blade lags. High minCutoff + high beta = snappy blade.
+    this.filterX = new OneEuroFilter(30, 2.2, 1.6);
+    this.filterY = new OneEuroFilter(30, 2.2, 1.6);
   }
 
   async init() {
