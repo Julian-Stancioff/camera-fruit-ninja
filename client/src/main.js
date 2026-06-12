@@ -26,11 +26,18 @@ let bladeRawPrev = null, bladeUsedPrev = null, bladeCur = null;
 let lastHandTs = 0;
 const trail = [];
 const TRAIL_MS = 150;
-// Lead the blade ahead along its own motion to cancel tracking/pipeline lag.
-// Scales with speed (lots of lead when swiping, none when still → no rest jitter).
-const LEAD = 0.55;
-const LEAD_CAP = 150; // px cap so a big jump can't overshoot wildly
-const DEBUG = new URLSearchParams(location.search).has("debug");
+// Tunable feel — overridable via URL (?gain=2.1&lead=0.7&debug) so we can dial it
+// in on the live site without a redeploy.
+const PARAMS = new URLSearchParams(location.search);
+const DEBUG = PARAMS.has("debug");
+// Gain expands a comfortable hand range to the FULL screen: reach the edges with
+// modest motion + makes the blade feel faster (more screen travel per hand move).
+const GAIN_X = parseFloat(PARAMS.get("gainx") || PARAMS.get("gain") || "2.0");
+const GAIN_Y = parseFloat(PARAMS.get("gainy") || PARAMS.get("gain") || "1.8");
+// Lead the blade ahead along its motion to cancel pipeline lag (speed-scaled, so
+// no jitter at rest).
+const LEAD = parseFloat(PARAMS.get("lead") || "0.65");
+const LEAD_CAP = 320; // px cap so a huge jump can't overshoot wildly
 
 const HAND_CONNECTIONS = [
   [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
@@ -48,13 +55,15 @@ function resizeAll() {
 }
 window.addEventListener("resize", resizeAll);
 
-// normalized (video frame) → screen px, accounting for object-fit:cover + mirror.
+// normalized fingertip (0..1 in the camera frame) → screen px.
+// The webcam is just a small PiP now, so the blade is a free cursor: we apply a
+// centered gain so a comfortable hand range covers the whole screen (reach the
+// edges, feels faster), then mirror x for the selfie view.
 function mapPoint(nx, ny) {
   const cw = window.innerWidth, ch = window.innerHeight;
-  const vw = video.videoWidth || cw, vh = video.videoHeight || ch;
-  const s = Math.max(cw / vw, ch / vh);
-  const offX = (cw - vw * s) / 2, offY = (ch - vh * s) / 2;
-  return { x: cw - (nx * vw * s + offX), y: ny * vh * s + offY };
+  const gx = Math.min(1, Math.max(0, 0.5 + (nx - 0.5) * GAIN_X));
+  const gy = Math.min(1, Math.max(0, 0.5 + (ny - 0.5) * GAIN_Y));
+  return { x: (1 - gx) * cw, y: gy * ch };
 }
 
 // ---------- start ----------
