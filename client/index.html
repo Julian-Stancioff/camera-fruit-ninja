@@ -17,6 +17,22 @@
   <!-- Prompt shown when the camera can't see a hand mid-game -->
   <div id="hand-hint">✋ Show your hand to the camera</div>
 
+  <!-- Settings (live feel tuning) -->
+  <button id="settings-btn" title="Settings" aria-label="Settings">⚙</button>
+  <div id="settings-panel" hidden>
+    <div class="set-row">
+      <label>Sensitivity <span id="set-sens-val"></span></label>
+      <input type="range" id="set-sens" min="1.2" max="3" step="0.1" />
+      <div class="set-hint">Higher = faster &amp; reaches the edges with less hand motion</div>
+    </div>
+    <div class="set-row">
+      <label>Smoothing <span id="set-smooth-val"></span></label>
+      <input type="range" id="set-smooth" min="0" max="1" step="0.05" />
+      <div class="set-hint">Higher = steadier (less jitter), slightly more lag</div>
+    </div>
+    <button id="set-reset" class="set-reset">Reset to defaults</button>
+  </div>
+
   <!-- Game HUD -->
   <div id="game-hud" hidden>
     <div id="strikes" aria-label="lives"></div>

@@ -71,6 +71,33 @@ body {
   100% { opacity: 0; transform: translate(-50%, -75%) scale(1); }
 }
 
+/* settings gear + panel */
+#settings-btn {
+  position: fixed; left: 18px; top: 84px; z-index: 8;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff; font-size: 1.3rem; cursor: pointer; backdrop-filter: blur(4px);
+  transition: transform 0.15s, background 0.15s;
+}
+#settings-btn:hover { background: rgba(0, 0, 0, 0.7); transform: rotate(40deg); }
+#settings-panel {
+  position: fixed; left: 18px; top: 136px; z-index: 9;
+  width: 268px; padding: 16px 18px; border-radius: 14px;
+  background: rgba(18, 12, 4, 0.92); border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55); backdrop-filter: blur(6px);
+}
+.set-row { margin-bottom: 16px; }
+.set-row label { display: block; font-weight: 700; font-size: 0.95rem; margin-bottom: 6px; }
+.set-row label span { color: var(--accent); float: right; }
+.set-row input[type="range"] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+.set-hint { font-size: 0.72rem; color: #cdbfa6; margin-top: 4px; line-height: 1.35; }
+.set-reset {
+  width: 100%; font: inherit; font-size: 0.85rem; font-weight: 700;
+  color: #f3e7cf; background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 8px; padding: 8px; cursor: pointer;
+}
+.set-reset:hover { background: rgba(255, 255, 255, 0.18); }
+
 /* "show your hand" prompt */
 #hand-hint {
   position: fixed; top: 46%; left: 50%; transform: translate(-50%, -50%);

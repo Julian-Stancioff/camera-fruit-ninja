@@ -26,21 +26,35 @@ let showSkeleton = false;
 // can dial it in on the live site without a redeploy.
 const PARAMS = new URLSearchParams(location.search);
 const DEBUG = PARAMS.has("debug");
-// Gain expands a comfortable hand range to the full screen: reach the edges with
-// modest motion + more screen travel per hand move (feels faster).
-const GAIN_X = parseFloat(PARAMS.get("gainx") || PARAMS.get("gain") || "1.8");
-const GAIN_Y = parseFloat(PARAMS.get("gainy") || PARAMS.get("gain") || "1.8");
-// 1€ filter in PIXEL space: smooth at rest (kills jitter), responsive in motion.
-const MINCUT = parseFloat(PARAMS.get("mincut") || "1.2");
-const BETA = parseFloat(PARAMS.get("beta") || "0.012");
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Player-tunable feel, persisted to localStorage and adjustable in-game (gear).
+// Sensitivity = gain (reach + speed). Smoothing 0..1 maps to 1€ filter params.
+function loadSettings() {
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem("fn_settings") || "{}"); } catch { /* ignore */ }
+  const urlGain = parseFloat(PARAMS.get("gain"));
+  return {
+    sensitivity: clamp(!isNaN(urlGain) ? urlGain : (s.sensitivity ?? 1.8), 1.2, 3.0),
+    smoothing: clamp(s.smoothing ?? 0.6, 0, 1),
+  };
+}
+function saveSettings() { localStorage.setItem("fn_settings", JSON.stringify(settings)); }
+// More smoothing → lower cutoff + lower beta (smoother, slightly more lag).
+function smoothingParams(s) { return { minCutoff: lerp(2.0, 0.8, s), beta: lerp(0.045, 0.004, s) }; }
+
+const settings = loadSettings();
+let GAIN_X = settings.sensitivity, GAIN_Y = settings.sensitivity;
 
 // blade state (screen px)
 let bladePrev = null, bladeCur = null;
 let lastHandTs = 0, lastDetectTs = 0;
 const trail = [];
 const TRAIL_MS = 150;
-const cursorFX = new OneEuroFilter(30, MINCUT, BETA);
-const cursorFY = new OneEuroFilter(30, MINCUT, BETA);
+const _sp = smoothingParams(settings.smoothing);
+const cursorFX = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
+const cursorFY = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 
 const HAND_CONNECTIONS = [
   [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
@@ -223,6 +237,33 @@ function updateHandHint(now) {
   const show = game && game.playing && now - lastHandTs > 700;
   $("hand-hint").classList.toggle("show", show);
 }
+
+// ---------- settings panel (live feel tuning) ----------
+function wireSettings() {
+  const sens = $("set-sens"), smooth = $("set-smooth");
+  const upd = () => {
+    $("set-sens-val").textContent = (+sens.value).toFixed(1) + "×";
+    $("set-smooth-val").textContent = Math.round(smooth.value * 100) + "%";
+  };
+  sens.value = settings.sensitivity;
+  smooth.value = settings.smoothing;
+  upd();
+  sens.oninput = () => {
+    GAIN_X = GAIN_Y = parseFloat(sens.value);
+    settings.sensitivity = GAIN_X; saveSettings(); upd();
+  };
+  smooth.oninput = () => {
+    const sp = smoothingParams(parseFloat(smooth.value));
+    cursorFX.minCutoff = cursorFY.minCutoff = sp.minCutoff;
+    cursorFX.beta = cursorFY.beta = sp.beta;
+    settings.smoothing = parseFloat(smooth.value); saveSettings(); upd();
+  };
+  $("set-reset").onclick = () => {
+    sens.value = 1.8; smooth.value = 0.6; sens.oninput(); smooth.oninput();
+  };
+  $("settings-btn").onclick = () => { $("settings-panel").hidden = !$("settings-panel").hidden; };
+}
+wireSettings();
 
 // ---------- 2D overlay: blade trail + debug skeleton ----------
 function drawOverlay(now) {
