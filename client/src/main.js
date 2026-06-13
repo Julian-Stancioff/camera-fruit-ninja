@@ -33,6 +33,7 @@ let controller = null;       // active game controller (Game or NetGame)
 let socket = null, netGame = null, you = 0, oppName = "Opponent";
 let lastBladeEmit = 0;
 let soloStartTs = 0, lastMusicTs = 0;
+let readyGate = null, readyResult = null; // hand-confirmation gate before a match
 const oppTrail = [];
 
 // Tunable feel — overridable via URL (?gain=2.2&mincut=1.0&beta=0.02&debug) so we
@@ -107,6 +108,20 @@ function mapPoint(nx, ny) {
   return { x: (1 - gx) * cw, y: gy * ch };
 }
 
+// ---------- start music on the very first interaction (audio needs a gesture) ----------
+let musicStarted = false;
+function kickMusic() {
+  if (musicStarted) return;
+  musicStarted = true;
+  const v = parseFloat(localStorage.getItem("fn_music_vol") ?? "0.7");
+  music.resume();
+  music.start();
+  music.setVolume(isNaN(v) ? 0.7 : v);
+  music.setIntensity(0.22);
+}
+document.addEventListener("pointerdown", kickMusic, { once: true });
+document.addEventListener("keydown", kickMusic, { once: true });
+
 // ---------- start ----------
 $("start-btn").addEventListener("click", start);
 $("again-btn").addEventListener("click", () => {
@@ -141,9 +156,6 @@ async function start() {
     resizeAll();
 
     sfx.resume();
-    music.resume();
-    music.setMuted(localStorage.getItem("fn_music") === "off");
-    music.start();
     music.setIntensity(0.22);
     $("start-screen").classList.add("gone");
     if (DEBUG) $("hud").hidden = false; // dev HUD only with ?debug
@@ -286,8 +298,12 @@ function startSolo() {
   if (!game) game = new Game(scene, effects, callbacks);
   controller = game;
   resetHud();
-  game.reset();
-  game.start();
+  music.setIntensity(0.25);
+  enterReady({
+    needHands: 1,
+    label: "Show your hand to the camera ✋",
+    onConfirmed: () => { exitReady(); runCountdown(3, () => { game.reset(); game.start(); }); },
+  });
 }
 $("mode-solo").addEventListener("click", startSolo);
 $("mode-versus").addEventListener("click", () => openVersus());
@@ -315,7 +331,25 @@ function ensureSocket() {
   if (socket) return;
   socket = connect();
   socket.on("connect_error", () => showVsError("Can't reach the game server — try again."));
+  socket.on("readyCheck", ({ players }) => enterVersusReady(players));
   socket.on("start", onMatchStart);
+}
+// Both players present → confirm each player's hand, then tell the server we're ready.
+function enterVersusReady(players) {
+  oppName = (players && players[1 - you]) || "Opponent";
+  $("versus-screen").hidden = true;
+  $("game-hud").hidden = false;
+  setHudMode("versus");
+  enterReady({
+    needHands: 1,
+    label: "Show your hand to get ready ✋",
+    onConfirmed: () => {
+      readyGate.done = true; // keep the gate showing your hand while we wait
+      socket.emit("ready");
+      $("ready-status").textContent = "✓ You're ready!";
+      $("ready-sub").textContent = "Waiting for your opponent's hand…";
+    },
+  });
 }
 function makeNetGame() { netGame = new NetGame(scene, effects, socket, you, netCallbacks); controller = netGame; }
 
@@ -343,6 +377,7 @@ function showWaiting(code) {
 }
 
 function onMatchStart(s) {
+  exitReady(); // both players confirmed their hands
   oppName = (s.players && s.players[1 - you]) || "Opponent";
   $("vs-opp-name").textContent = oppName;
   $("versus-screen").hidden = true;
@@ -440,10 +475,6 @@ function startSplit() {
   setHudMode("split");
   music.setIntensity(0.6);
   if (!splitGame) splitGame = new SplitGame(scene.renderer, splitCallbacks);
-  // two camera PiPs (P1 bottom-left, P2 bottom-right)
-  $("webcam").classList.add("pip-left");
-  const w2 = $("webcam2"); w2.srcObject = video.srcObject; w2.hidden = false; w2.play?.();
-  // reset per-side state
   for (const k of ["left", "right"]) {
     const s = splitSide[k]; s.prev = s.cur = null; s.miss = 0; s.trail.length = 0; s.fx.reset(); s.fy.reset();
   }
@@ -451,7 +482,18 @@ function startSplit() {
   $("vs-opp-name").textContent = "Player 2";
   $("vs-you-score").textContent = "0"; $("vs-opp-score").textContent = "0";
   $("vs-timer").textContent = formatTime(splitGame.durationMs / 1000);
-  runCountdown(3, () => splitGame.start());
+  enterReady({
+    needHands: 2,
+    label: "Both players — show a hand ✋",
+    sub: "Player 1 (red) on the left, Player 2 (blue) on the right",
+    onConfirmed: () => {
+      exitReady();
+      // two camera PiPs (P1 bottom-left, P2 bottom-right)
+      $("webcam").classList.add("pip-left");
+      const w2 = $("webcam2"); w2.srcObject = video.srcObject; w2.hidden = false; w2.play?.();
+      runCountdown(3, () => splitGame.start());
+    },
+  });
 }
 function endSplitView() {
   $("webcam").classList.remove("pip-left");
@@ -517,6 +559,85 @@ function handleSplitHands(result, now, dtMs, freq) {
   };
 }
 
+// ============================ hand-confirmation "ready" gate ============================
+// Before a match: show the camera big, draw the live hand skeleton in colour, and
+// only proceed once the required hand(s) are seen for ~0.6s. needHands 2 (split)
+// requires one hand on each side; otherwise any one hand.
+function enterReady({ needHands, label, sub, onConfirmed }) {
+  readyGate = { needHands, onConfirmed, okSince: 0, done: false };
+  $("webcam").classList.remove("pip-left");
+  $("webcam").classList.add("cam-ready");
+  $("webcam").classList.remove("cam-off");
+  $("webcam2").hidden = true;
+  overlay.classList.add("overlay-top");
+  $("ready-status").innerHTML = label;
+  $("ready-sub").textContent = sub || "";
+  $("ready-screen").hidden = false;
+}
+function exitReady() {
+  readyGate = null;
+  $("webcam").classList.remove("cam-ready");
+  overlay.classList.remove("overlay-top");
+  $("ready-screen").hidden = true;
+}
+
+function readyTick(now) {
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    readyResult = tracker.detect(video, now);
+  }
+  const hands = readyResult?.present ? readyResult.hands : [];
+  let okNow;
+  if (readyGate.needHands === 2) {
+    let l = false, r = false;
+    for (const h of hands) { const mx = 1 - h.x; if (mx < 0.5) l = true; else r = true; }
+    okNow = l && r;
+    $("ready-sub").textContent = okNow ? "✓ Both hands detected!" : "Each player: hold one hand up in view";
+  } else {
+    okNow = hands.length >= 1;
+    $("ready-sub").textContent = okNow ? "✓ Hand detected!" : "Hold your hand up in view";
+  }
+  if (okNow) { if (!readyGate.okSince) readyGate.okSince = now; }
+  else readyGate.okSince = 0;
+
+  if (okNow && readyGate.okSince && now - readyGate.okSince > 600 && !readyGate.done) {
+    readyGate.done = true;
+    readyGate.onConfirmed();
+    return;
+  }
+  // draw
+  octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  drawReadyDots(readyResult);
+}
+
+function mapToCam(nx, ny, rect, vw, vh) {
+  const s = Math.max(rect.width / vw, rect.height / vh);
+  const dispW = vw * s, dispH = vh * s;
+  const localX = nx * dispW + (rect.width - dispW) / 2; // unmirrored within rect
+  return { x: rect.left + (rect.width - localX), y: rect.top + ny * dispH + (rect.height - dispH) / 2 };
+}
+function drawReadyDots(result) {
+  if (!result?.present) return;
+  const rect = video.getBoundingClientRect();
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  for (const hand of (result.allLandmarks || [])) {
+    const mx = 1 - hand[8].x;
+    const color = readyGate.needHands === 2 ? (mx < 0.5 ? "#ff5a5a" : "#5aa0ff") : "#ffd24a";
+    octx.save();
+    octx.strokeStyle = color; octx.fillStyle = color; octx.lineWidth = 3; octx.globalAlpha = 0.92;
+    octx.shadowColor = color; octx.shadowBlur = 8;
+    for (const [a, b] of HAND_CONNECTIONS) {
+      const pa = mapToCam(hand[a].x, hand[a].y, rect, vw, vh), pb = mapToCam(hand[b].x, hand[b].y, rect, vw, vh);
+      octx.beginPath(); octx.moveTo(pa.x, pa.y); octx.lineTo(pb.x, pb.y); octx.stroke();
+    }
+    for (let i = 0; i < hand.length; i++) {
+      const p = mapToCam(hand[i].x, hand[i].y, rect, vw, vh);
+      octx.beginPath(); octx.arc(p.x, p.y, i === 8 ? 7 : 4, 0, Math.PI * 2); octx.fill();
+    }
+    octx.restore();
+  }
+}
+
 // ---------- loop ----------
 // rAF render loop → smooth 60fps fruit + trail. Hand detection runs only on a new
 // camera frame (~30fps) via the currentTime guard inside tick(), so the game never
@@ -529,6 +650,8 @@ function startLoop() {
 function tick(now) {
   const dt = lastTickTs ? Math.min((now - lastTickTs) / 1000, 0.05) : 0.016;
   lastTickTs = now;
+
+  if (readyGate) { readyTick(now); return; } // hand-confirmation gate owns the frame
 
   let segment = null, splitSegLeft = null, splitSegRight = null;
   if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
@@ -635,12 +758,15 @@ function wireSettings() {
   $("set-reset").onclick = () => {
     sens.value = 1.8; smooth.value = 0.6; sens.oninput(); smooth.oninput();
   };
-  // music on/off
-  const musicOn = localStorage.getItem("fn_music") !== "off";
-  $("set-music").checked = musicOn;
-  $("set-music").onchange = (e) => {
-    localStorage.setItem("fn_music", e.target.checked ? "on" : "off");
-    music.setMuted(!e.target.checked);
+  // music volume slider
+  const mvol = $("set-music");
+  mvol.value = localStorage.getItem("fn_music_vol") ?? "0.7";
+  const updMusic = () => { $("set-music-val").textContent = `${Math.round(mvol.value * 100)}%`; };
+  updMusic();
+  mvol.oninput = () => {
+    music.setVolume(parseFloat(mvol.value));
+    localStorage.setItem("fn_music_vol", mvol.value);
+    updMusic();
   };
   $("settings-btn").onclick = () => { $("settings-panel").hidden = !$("settings-panel").hidden; };
 
@@ -772,6 +898,8 @@ if (new URLSearchParams(location.search).has("test")) {
     get netGame() { return netGame; },
     get splitGame() { return splitGame; },
     get you() { return you; },
+    get readyActive() { return !!readyGate; },
+    forceReady() { if (readyGate && !readyGate.done) { readyGate.done = true; readyGate.onConfirmed(); } },
     splitSpawn(side, type) {
       const half = splitGame[side];
       const r = Math.min(half.scene.w, half.scene.h) * 0.06;

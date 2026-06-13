@@ -6,8 +6,8 @@
 import { Fruit } from "../game/Fruit.js";
 import { segmentHitsCircle } from "../game/slice.js";
 
-const SPEED_GATE = 280;
-const HIT_MARGIN = 1.18;
+const SPEED_GATE = 180;
+const HIT_MARGIN = 1.3;
 
 export class NetGame {
   constructor(scene, effects, socket, you, cb = {}) {

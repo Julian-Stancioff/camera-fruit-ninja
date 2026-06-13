@@ -3,8 +3,8 @@
 // quiet bass+arp at rest → driving drums + lead at full intensity. A lookahead
 // scheduler keeps timing tight ("two clocks" pattern).
 let ctx = null, master = null, comp = null;
-let playing = false, intensity = 0, muted = false;
-const TARGET_VOL = 0.4;
+let playing = false, intensity = 0, volume = 0.7;
+const MAX_GAIN = 0.55; // volume 1.0 → this master gain
 let timer = null, nextTime = 0, step = 0;
 const LOOKAHEAD = 0.12, TICK_MS = 25;
 
@@ -28,11 +28,11 @@ function ac() {
 
 export function resume() { ac().resume?.(); }
 export function setIntensity(x) { intensity = Math.max(0, Math.min(1, x)); }
-export function setMuted(m) {
-  muted = m;
-  if (master) master.gain.linearRampToValueAtTime(m ? 0 : (playing ? TARGET_VOL : 0), ac().currentTime + 0.2);
+export function setVolume(v) {
+  volume = Math.max(0, Math.min(1, v));
+  if (master) master.gain.linearRampToValueAtTime(playing ? volume * MAX_GAIN : 0, ac().currentTime + 0.2);
 }
-export function isMuted() { return muted; }
+export function getVolume() { return volume; }
 
 function tone(type, freq, t, dur, peak) {
   const o = ctx.createOscillator(); o.type = type; o.frequency.value = freq;
@@ -86,7 +86,7 @@ export function start() {
   if (playing) return;
   playing = true; step = 0; nextTime = ctx.currentTime + 0.1;
   master.gain.cancelScheduledValues(ctx.currentTime);
-  master.gain.linearRampToValueAtTime(muted ? 0 : TARGET_VOL, ctx.currentTime + 0.6);
+  master.gain.linearRampToValueAtTime(volume * MAX_GAIN, ctx.currentTime + 0.6);
   timer = setInterval(loop, TICK_MS);
 }
 export function stop() {

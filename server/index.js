@@ -104,7 +104,7 @@ function resetRoom(room) {
   clearInterval(room.tickTimer);
   room.fruits = new Map();
   room.seq = 0;
-  room.players.forEach((p) => (p.score = 0));
+  room.players.forEach((p) => { p.score = 0; p.ready = true; }); // rematch: keep both ready
   room.status = "waiting";
 }
 
@@ -116,7 +116,7 @@ io.on("connection", (socket) => {
       startAt: 0, endAt: 0, spawnTimer: null, tickTimer: null,
     };
     rooms.set(code, room);
-    room.players.push({ id: socket.id, name: (name || "Player 1").slice(0, 16), score: 0 });
+    room.players.push({ id: socket.id, name: (name || "Player 1").slice(0, 16), score: 0, ready: false });
     socket.data.room = code; socket.data.idx = 0;
     socket.join(code);
     cb?.({ ok: true, code, you: 0 });
@@ -126,11 +126,20 @@ io.on("connection", (socket) => {
     const room = rooms.get((code || "").toUpperCase());
     if (!room) return cb?.({ ok: false, error: "No game with that code." });
     if (room.players.length >= 2) return cb?.({ ok: false, error: "That game is full." });
-    room.players.push({ id: socket.id, name: (name || "Player 2").slice(0, 16), score: 0 });
+    room.players.push({ id: socket.id, name: (name || "Player 2").slice(0, 16), score: 0, ready: false });
     socket.data.room = room.code; socket.data.idx = 1;
     socket.join(room.code);
     cb?.({ ok: true, code: room.code, you: 1, players: room.players.map((p) => p.name) });
-    startMatch(room); // both present → begin
+    // Both present → ask each client to confirm its player's hand before starting.
+    io.to(room.code).emit("readyCheck", { players: room.players.map((p) => p.name) });
+  });
+
+  socket.on("ready", () => {
+    const room = roomFor(socket);
+    if (!room) return;
+    const p = room.players[socket.data.idx];
+    if (p) p.ready = true;
+    if (room.players.length === 2 && room.players.every((x) => x.ready)) startMatch(room);
   });
 
   socket.on("blade", ({ nx, ny }) => {

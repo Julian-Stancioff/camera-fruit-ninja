@@ -6,8 +6,8 @@ import { FruitSpawner } from "./FruitSpawner.js";
 import { ScoreManager } from "./ScoreManager.js";
 import { segmentHitsCircle } from "./slice.js";
 
-const SPEED_GATE = 280; // px/s: deliberate (even gentle) cuts register; smooth cursor avoids false cuts at rest
-const HIT_MARGIN = 1.18; // forgiving slice radius (camera tracking isn't pixel-perfect)
+const SPEED_GATE = 180; // px/s: even a gentle swipe registers (forgiving)
+const HIT_MARGIN = 1.3;  // generous slice radius (camera tracking isn't pixel-perfect)
 
 export class Game {
   constructor(scene, effects, callbacks = {}) {

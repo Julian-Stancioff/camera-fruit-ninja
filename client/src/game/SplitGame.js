@@ -8,8 +8,8 @@ import { segmentHitsCircle } from "./slice.js";
 import { HalfScene } from "../rendering/scene.js";
 import { Effects } from "../rendering/effects.js";
 
-const SPEED_GATE = 280;
-const HIT_MARGIN = 1.18;
+const SPEED_GATE = 180;
+const HIT_MARGIN = 1.3;
 const MISS_PENALTY = 2;
 const BOMB_PENALTY = 5;
 const DURATION_MS = 180000; // 3 minutes

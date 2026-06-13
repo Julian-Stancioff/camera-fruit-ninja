@@ -51,6 +51,7 @@ export class HandTracker {
       blade: hands[0],          // first hand drives solo/versus
       hands,                    // all fingertips (split-screen uses both)
       landmarks: all[0],
+      allLandmarks: all,        // every hand's full 21-point skeleton (ready gate dots)
       handedness: results.handedness?.[0]?.[0]?.categoryName ?? null,
     };
   }

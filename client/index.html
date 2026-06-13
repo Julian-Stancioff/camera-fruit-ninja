@@ -42,7 +42,8 @@
       </div>
     </div>
     <div class="set-row">
-      <label class="music-toggle"><input type="checkbox" id="set-music" checked /> Music</label>
+      <label>Music <span id="set-music-val"></span></label>
+      <input type="range" id="set-music" min="0" max="1" step="0.05" />
     </div>
     <button id="set-reset" class="set-reset">Reset feel to defaults</button>
   </div>
@@ -167,6 +168,14 @@
 
       <button id="again-btn">Play again</button>
       <button id="menu-btn" class="set-reset" hidden style="margin-top:12px">← Back to menu</button>
+    </div>
+  </div>
+
+  <!-- Hand-confirmation ready gate -->
+  <div id="ready-screen" hidden>
+    <div class="ready-text">
+      <div id="ready-status">Show your hand to the camera ✋</div>
+      <div id="ready-sub"></div>
     </div>
   </div>
 
