@@ -110,6 +110,32 @@ body {
 #hand-hint.show { opacity: 1; animation: handPulse 1.6s ease-in-out infinite; }
 @keyframes handPulse { 0%,100% { transform: translate(-50%,-50%) scale(1); } 50% { transform: translate(-50%,-50%) scale(1.06); } }
 
+/* belt rank badge + level-up toast */
+#belt {
+  position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 9px;
+  background: rgba(0, 0, 0, 0.42); border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 6px 14px; border-radius: 999px; backdrop-filter: blur(4px);
+  font-weight: 700; font-size: 0.9rem;
+}
+.belt-dot { width: 15px; height: 15px; border-radius: 3px; border: 1px solid rgba(255, 255, 255, 0.45); background: #eef0f2; }
+.belt-bar { width: 64px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.22); overflow: hidden; }
+.belt-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.35s ease; }
+#belt-toast {
+  position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 2.6rem; font-weight: 900; color: #fff; white-space: nowrap;
+  text-shadow: 0 3px 0 #b9881f, 0 0 26px rgba(255, 210, 74, 0.85);
+  opacity: 0; pointer-events: none;
+}
+#belt-toast.show { animation: beltPop 1.9s ease-out forwards; }
+@keyframes beltPop {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5) rotate(-5deg); }
+  15% { opacity: 1; transform: translate(-50%, -50%) scale(1.15) rotate(3deg); }
+  80% { opacity: 1; transform: translate(-50%, -58%) scale(1) rotate(0); }
+  100% { opacity: 0; transform: translate(-50%, -74%) scale(1); }
+}
+.start-rank { margin: 0 0 18px; font-weight: 700; color: var(--accent); }
+
 /* red flash on bomb / miss */
 #overlay.flash-bad { animation: flashBad 0.4s ease-out; }
 @keyframes flashBad { 0% { background: rgba(255,0,0,0.0); } 25% { background: rgba(255,0,0,0.32); } 100% { background: rgba(255,0,0,0); } }

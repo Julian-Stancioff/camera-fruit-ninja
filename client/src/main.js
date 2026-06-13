@@ -7,6 +7,7 @@ import { Game } from "./game/Game.js";
 import { Fruit } from "./game/Fruit.js";
 import { bladeSpeed } from "./game/slice.js";
 import { OneEuroFilter } from "./tracking/OneEuroFilter.js";
+import { addSlices, getTotal, beltFor, beltProgress } from "./game/belts.js";
 import * as sfx from "./audio/sfx.js";
 
 const $ = (id) => document.getElementById(id);
@@ -144,6 +145,10 @@ const callbacks = {
   onSlice({ comboSize, score }) {
     setScore(score);
     sfx.slice();
+    const total = addSlices(1);
+    const b = beltFor(total);
+    if (b.name !== currentBelt) { currentBelt = b.name; showBeltToast(b); sfx.combo(4); }
+    renderBelt();
     if (comboSize >= 3) { showCombo(comboSize); sfx.combo(comboSize); }
   },
   onMiss(strikes) { renderStrikes(strikes); flashBad(); sfx.miss(); },
@@ -158,7 +163,22 @@ const callbacks = {
 };
 
 function setScore(s) { $("score").textContent = s; }
-function resetHud() { setScore(0); renderStrikes(3); }
+function resetHud() { setScore(0); renderStrikes(3); renderBelt(); }
+
+let currentBelt = beltFor(getTotal()).name;
+function renderBelt() {
+  const t = getTotal(), b = beltFor(t);
+  $("belt-dot").style.background = b.color;
+  $("belt-name").textContent = `${b.name} Belt`;
+  $("belt-fill").style.width = `${Math.round(beltProgress(t) * 100)}%`;
+}
+function showBeltToast(b) {
+  const el = $("belt-toast");
+  el.textContent = `🥋 ${b.name} Belt!`;
+  el.classList.remove("show");
+  void el.offsetWidth;
+  el.classList.add("show");
+}
 function renderStrikes(n) {
   let html = "";
   for (let i = 0; i < 3; i++) html += `<span class="strike${i >= n ? " lost" : ""}">✕</span>`;
@@ -264,6 +284,7 @@ function wireSettings() {
   $("settings-btn").onclick = () => { $("settings-panel").hidden = !$("settings-panel").hidden; };
 }
 wireSettings();
+$("start-rank").textContent = `🥋 Your rank: ${beltFor(getTotal()).name} Belt`;
 
 // ---------- 2D overlay: blade trail + debug skeleton ----------
 function drawOverlay(now) {

@@ -37,7 +37,13 @@
   <div id="game-hud" hidden>
     <div id="strikes" aria-label="lives"></div>
     <div id="score">0</div>
+    <div id="belt" aria-label="belt rank">
+      <span class="belt-dot" id="belt-dot"></span>
+      <span id="belt-name">White Belt</span>
+      <span class="belt-bar"><i id="belt-fill"></i></span>
+    </div>
     <div id="combo"></div>
+    <div id="belt-toast"></div>
   </div>
 
   <!-- Debug HUD -->
@@ -60,6 +66,7 @@
       <h1>Camera Fruit Ninja</h1>
       <p class="start-sub">Slice the fruit with your hand — your <strong>index fingertip</strong> is the blade.
         Swipe fast to cut, dodge the <strong>bombs</strong>, and don't let fruit fall.</p>
+      <p class="start-rank" id="start-rank"></p>
       <button id="start-btn">Start camera</button>
       <p class="start-note" id="start-note">Allow camera access when asked. Everything runs on your device — nothing is uploaded.</p>
     </div>
