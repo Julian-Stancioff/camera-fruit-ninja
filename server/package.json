@@ -1,0 +1,13 @@
+{
+  "name": "camera-fruit-ninja-server",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Authoritative Socket.io server for competitive 1v1 Camera Fruit Ninja",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1"
+  }
+}
