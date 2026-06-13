@@ -9,8 +9,7 @@
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
-  <div id="dojo"></div>
-  <div id="build-badge">v2 · robust tracking</div>
+  <div id="dojo" class="bg-dojo"></div>
   <video id="webcam" playsinline muted></video>
   <canvas id="game-canvas"></canvas>
   <canvas id="overlay"></canvas>
@@ -31,26 +30,30 @@
       <input type="range" id="set-smooth" min="0" max="1" step="0.05" />
       <div class="set-hint">Higher = steadier (less jitter), slightly more lag</div>
     </div>
-    <button id="set-reset" class="set-reset">Reset to defaults</button>
+    <div class="set-row">
+      <label>Background</label>
+      <div class="bg-options" id="bg-options">
+        <button class="bg-opt bg-sw-dojo" data-bg="dojo" title="Dojo"></button>
+        <button class="bg-opt bg-sw-sunset" data-bg="sunset" title="Sunset"></button>
+        <button class="bg-opt bg-sw-neon" data-bg="neon" title="Neon"></button>
+        <button class="bg-opt bg-sw-night" data-bg="night" title="Night"></button>
+        <button class="bg-opt bg-sw-sakura" data-bg="sakura" title="Sakura"></button>
+      </div>
+    </div>
+    <button id="set-reset" class="set-reset">Reset feel to defaults</button>
   </div>
 
   <!-- Game HUD -->
   <div id="game-hud" hidden>
     <div id="strikes" aria-label="lives"></div>
     <div id="score">0</div>
-    <div id="belt" aria-label="belt rank">
-      <span class="belt-dot" id="belt-dot"></span>
-      <span id="belt-name">White Belt</span>
-      <span class="belt-bar"><i id="belt-fill"></i></span>
-    </div>
-    <!-- versus top bar (shown only in 1v1) -->
+    <!-- versus / split top bar -->
     <div id="versus-hud" hidden>
       <div class="vs-side you"><span class="vs-label">You</span><span id="vs-you-score">0</span></div>
       <div class="vs-timer" id="vs-timer">90</div>
       <div class="vs-side opp"><span class="vs-label" id="vs-opp-name">Opponent</span><span id="vs-opp-score">0</span></div>
     </div>
     <div id="combo"></div>
-    <div id="belt-toast"></div>
   </div>
 
   <!-- Debug HUD -->
@@ -66,52 +69,48 @@
     </div>
   </div>
 
-  <!-- Start gate -->
+  <!-- ===================== HOME ===================== -->
   <div id="start-screen">
-    <div class="start-card">
-      <div class="start-emoji">🍉🔪</div>
-      <h1>Camera Fruit Ninja</h1>
-      <p class="start-sub">Slice the fruit with your hand — your <strong>index fingertip</strong> is the blade.
-        Swipe fast to cut, dodge the <strong>bombs</strong>, and don't let fruit fall.</p>
-      <p class="start-rank" id="start-rank"></p>
-      <button id="start-btn">Start camera</button>
-      <p class="start-note" id="start-note">Allow camera access when asked. Everything runs on your device — nothing is uploaded.</p>
-    </div>
-  </div>
+    <div class="home-card">
+      <div class="home-fruit" aria-hidden="true">🍉🍊🍓🥝🍋</div>
+      <h1 class="home-title">Camera Fruit&nbsp;Ninja</h1>
+      <p class="home-tag">Your hand is the blade. Slice the fruit, dodge the bombs,
+        and rank up your belt.</p>
 
-  <!-- Game over -->
-  <div id="gameover" hidden>
-    <div class="over-card">
-      <h2 id="over-title">Game Over</h2>
-      <p id="over-reason"></p>
-      <div class="over-scores">
-        <div><span class="over-num" id="over-score">0</span><span class="over-lbl" id="over-score-lbl">Score</span></div>
-        <div><span class="over-num" id="over-best">0</span><span class="over-lbl" id="over-best-lbl">Best</span></div>
+      <div class="level-card" id="home-level">
+        <span class="belt-chip" id="home-belt-chip"></span>
+        <div class="level-info">
+          <div class="level-name" id="home-level-name">Level 1 · White Belt</div>
+          <div class="xp-bar"><i id="home-xp-fill"></i></div>
+          <div class="xp-sub" id="home-xp-sub">0 XP</div>
+        </div>
       </div>
-      <button id="again-btn">Play again</button>
-      <button id="menu-btn" class="set-reset" hidden style="margin-top:12px">← Back to menu</button>
+
+      <button id="start-btn" class="btn-play">▶ &nbsp;Play</button>
+      <p class="start-note" id="start-note">Allow the camera when asked — it runs on your device, nothing is uploaded.</p>
     </div>
   </div>
 
-  <!-- Mode select (after camera starts) -->
+  <!-- ===================== MODE SELECT ===================== -->
   <div id="mode-screen" hidden>
-    <div class="start-card">
+    <div class="home-card">
       <div class="start-emoji">🥷</div>
-      <h1>Choose a mode</h1>
-      <p class="start-rank" id="mode-rank"></p>
+      <h1 class="home-title">Choose a mode</h1>
+      <div class="level-pill" id="mode-rank"></div>
       <div class="mode-buttons">
-        <button id="mode-solo" class="mode-big">🍉 Solo<span>Classic — slice, combo, survive</span></button>
-        <button id="mode-versus" class="mode-big">⚔️ Versus 1v1<span>Race a friend in real time</span></button>
+        <button id="mode-solo" class="mode-big">🍉 Solo<span>Classic — slice, combo, rank up</span></button>
+        <button id="mode-versus" class="mode-big">⚔️ Versus 1v1<span>Online — race a friend by code/link</span></button>
+        <button id="mode-split" class="mode-big">👥 Same-screen 2P<span>Split-screen, two hands, 3-min race</span></button>
       </div>
     </div>
   </div>
 
-  <!-- Versus lobby -->
+  <!-- ===================== VERSUS LOBBY ===================== -->
   <div id="versus-screen" hidden>
-    <div class="start-card">
-      <h1>Versus 1v1</h1>
+    <div class="home-card">
+      <h1 class="home-title">Versus 1v1</h1>
       <div id="vs-choose">
-        <p class="start-sub">Create a game and share the code, or join your friend's.</p>
+        <p class="home-tag">Create a game and share the code, or join your friend's.</p>
         <button id="vs-create" class="mode-big">➕ Create a game</button>
         <div class="vs-or">— or —</div>
         <div class="vs-join">
@@ -121,13 +120,40 @@
         <p class="start-note error" id="vs-error" hidden></p>
       </div>
       <div id="vs-wait" hidden>
-        <p class="start-sub">Share this with your opponent:</p>
+        <p class="home-tag">Share this with your opponent:</p>
         <div class="vs-code-display" id="vs-code-display">----</div>
         <input id="vs-link" class="vs-link" readonly />
         <button id="vs-copy" class="mode-big">📋 Copy link</button>
         <p class="start-note" id="vs-wait-note">Waiting for your opponent to join…</p>
       </div>
       <button id="vs-back" class="set-reset" style="margin-top:14px">← Back</button>
+    </div>
+  </div>
+
+  <!-- ===================== GAME OVER ===================== -->
+  <div id="gameover" hidden>
+    <div class="over-card">
+      <h2 id="over-title">Game Over</h2>
+      <p id="over-reason"></p>
+      <div class="over-scores">
+        <div><span class="over-num" id="over-score">0</span><span class="over-lbl" id="over-score-lbl">Score</span></div>
+        <div><span class="over-num" id="over-best">0</span><span class="over-lbl" id="over-best-lbl">Best</span></div>
+      </div>
+
+      <!-- XP / level progression (solo) -->
+      <div class="over-progress" id="over-progress" hidden>
+        <div class="over-levelup" id="over-levelup" hidden></div>
+        <div class="lvl-row">
+          <span class="belt-chip" id="over-belt-chip"></span>
+          <span class="level-name" id="over-level-name"></span>
+          <span class="xp-gain" id="over-xp-gain"></span>
+        </div>
+        <div class="xp-bar"><i id="over-xp-fill"></i></div>
+        <div class="xp-sub" id="over-xp-sub"></div>
+      </div>
+
+      <button id="again-btn">Play again</button>
+      <button id="menu-btn" class="set-reset" hidden style="margin-top:12px">← Back to menu</button>
     </div>
   </div>
 

@@ -13,14 +13,20 @@ export class Scene {
     this.camera = new THREE.OrthographicCamera(0, 1, 0, 1, -1000, 1000);
     this.camera.position.z = 100;
 
-    // Lighting tuned for glossy fruit highlights.
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.85));
-    const key = new THREE.DirectionalLight(0xfff4e0, 1.15);
-    key.position.set(-0.4, -0.8, 1).multiplyScalar(100); // from upper-left, toward camera
+    // Lighting tuned for glossy, punchy fruit: soft ambient + bright key (sharp
+    // highlight) + cool fill + a rim/back light for a glossy edge.
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const hemi = new THREE.HemisphereLight(0xfff3d8, 0x3a2a14, 0.55);
+    this.scene.add(hemi);
+    const key = new THREE.DirectionalLight(0xfff4e0, 1.5);
+    key.position.set(-0.5, -0.9, 1).multiplyScalar(100); // upper-left, toward camera
     this.scene.add(key);
-    const fill = new THREE.DirectionalLight(0x88aaff, 0.35);
-    fill.position.set(0.6, 0.5, 0.6).multiplyScalar(100);
+    const fill = new THREE.DirectionalLight(0x9ab8ff, 0.45);
+    fill.position.set(0.7, 0.5, 0.6).multiplyScalar(100);
     this.scene.add(fill);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.9);
+    rim.position.set(0.2, 0.6, -1).multiplyScalar(100); // behind, glossy edge highlight
+    this.scene.add(rim);
 
     this.resize();
   }

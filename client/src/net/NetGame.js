@@ -5,7 +5,6 @@
 // moves when the server says so.
 import { Fruit } from "../game/Fruit.js";
 import { segmentHitsCircle } from "../game/slice.js";
-import { addSlices, beltFor } from "../game/belts.js";
 
 const SPEED_GATE = 280;
 const HIT_MARGIN = 1.18;
@@ -57,7 +56,8 @@ export class NetGame {
           segmentHitsCircle(segment.a.x, segment.a.y, segment.b.x, segment.b.y, f.x, f.y, f.radius * HIT_MARGIN)) {
         // Predict the cut locally for instant feel; score arrives from the server.
         this.localSliced.add(id);
-        if (f.isBomb) this.effects.explode(f); else this.effects.sliceBurst(f);
+        const dx = segment.b.x - segment.a.x, dy = segment.b.y - segment.a.y, len = Math.hypot(dx, dy) || 1;
+        if (f.isBomb) this.effects.explode(f); else this.effects.sliceBurst(f, { x: dx / len, y: dy / len });
         this.scene.remove(f.mesh);
         this.fruits.delete(id);
         this.socket.emit("slice", { fruitId: id });
@@ -71,10 +71,6 @@ export class NetGame {
   _onSliced({ fruitId, by, type, scores }) {
     this.scores = scores;
     this.cb.onScores?.(scores);
-    if (by === this.you && type !== "bomb") {
-      const total = addSlices(1);
-      this.cb.onBelt?.(beltFor(total));
-    }
     const f = this.fruits.get(fruitId); // opponent claimed one we still had
     if (f) {
       if (f.isBomb) this.effects.explode(f); else this.effects.sliceBurst(f);

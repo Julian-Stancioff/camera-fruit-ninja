@@ -7,7 +7,7 @@ import { Game } from "./game/Game.js";
 import { Fruit } from "./game/Fruit.js";
 import { bladeSpeed } from "./game/slice.js";
 import { OneEuroFilter } from "./tracking/OneEuroFilter.js";
-import { addSlices, getTotal, beltFor, beltProgress } from "./game/belts.js";
+import { addXP, getXP, levelFor, levelProgress, nextLevel } from "./game/belts.js";
 import { connect } from "./net/net.js";
 import { NetGame } from "./net/NetGame.js";
 import * as sfx from "./audio/sfx.js";
@@ -156,47 +156,78 @@ const callbacks = {
   onSlice({ comboSize, score }) {
     setScore(score);
     sfx.slice();
-    const total = addSlices(1);
-    const b = beltFor(total);
-    if (b.name !== currentBelt) { currentBelt = b.name; showBeltToast(b); sfx.combo(4); }
-    renderBelt();
-    if (comboSize >= 3) { showCombo(comboSize); sfx.combo(comboSize); }
+    if (comboSize >= 2) { showCombo(comboSize); sfx.combo(comboSize); }
   },
-  onMiss(strikes) { renderStrikes(strikes); flashBad(); sfx.miss(); },
-  onBomb() { flashBad(); sfx.bomb(); },
+  // A lost life from a missed fruit or a sliced bomb (3 strikes = over).
+  onStrike(strikesLeft, cause) {
+    renderStrikes(strikesLeft, true);
+    flashBad();
+    if (cause === "bomb") sfx.bomb(); else sfx.miss();
+  },
   onGameOver({ reason, score, best }) {
     sfx.gameover();
-    $("over-title").textContent = "Game Over";
-    $("over-reason").textContent = reason === "bomb" ? "💥 You sliced a bomb!" : "You ran out of lives.";
-    $("over-score").textContent = score; $("over-score-lbl").textContent = "Score";
-    $("over-best").textContent = best; $("over-best-lbl").textContent = "Best";
-    $("again-btn").textContent = "Play again";
-    $("menu-btn").hidden = false;
-    setTimeout(() => { $("gameover").hidden = false; }, 700);
+    showSoloGameOver(reason, score, best);
   },
 };
 
 function setScore(s) { $("score").textContent = s; }
-function resetHud() { setScore(0); renderStrikes(3); renderBelt(); }
+function resetHud() { setScore(0); renderStrikes(3); }
 
-let currentBelt = beltFor(getTotal()).name;
-function renderBelt() {
-  const t = getTotal(), b = beltFor(t);
-  $("belt-dot").style.background = b.color;
-  $("belt-name").textContent = `${b.name} Belt`;
-  $("belt-fill").style.width = `${Math.round(beltProgress(t) * 100)}%`;
+// XP / level (belts). Level-ups happen on the game-over screen, never mid-game.
+function renderLevel() {
+  const xp = getXP(), lv = levelFor(xp), nxt = nextLevel(xp);
+  const pct = Math.round(levelProgress(xp) * 100);
+  $("home-belt-chip").style.background = lv.color;
+  $("home-level-name").textContent = `Level ${lv.level} · ${lv.name} Belt`;
+  $("home-xp-fill").style.width = `${pct}%`;
+  $("home-xp-sub").textContent = nxt ? `${xp} XP · ${nxt.xp - xp} to ${nxt.name} Belt` : `${xp} XP · max rank`;
+  $("mode-rank").innerHTML = `<span class="belt-chip" style="width:18px;height:18px;background:${lv.color}"></span> Level ${lv.level} · ${lv.name} Belt`;
 }
-function showBeltToast(b) {
-  const el = $("belt-toast");
-  el.textContent = `🥋 ${b.name} Belt!`;
-  el.classList.remove("show");
-  void el.offsetWidth;
-  el.classList.add("show");
+
+function showSoloGameOver(reason, score, best) {
+  $("over-title").textContent = "Game Over";
+  $("over-reason").textContent = reason === "bomb"
+    ? "💥 Too many strikes — watch the bombs!" : "Out of lives — three fruit got past you.";
+  $("over-score").textContent = score; $("over-score-lbl").textContent = "Score";
+  $("over-best").textContent = best; $("over-best-lbl").textContent = "Best";
+
+  // Bank XP from the score and show progression / level-up.
+  const beforeXP = getXP(), beforeLv = levelFor(beforeXP).level;
+  const afterXP = addXP(score), afterLv = levelFor(afterXP);
+  const leveledUp = afterLv.level > beforeLv;
+  $("over-progress").hidden = false;
+  $("over-belt-chip").style.background = afterLv.color;
+  $("over-level-name").textContent = `Level ${afterLv.level} · ${afterLv.name} Belt`;
+  $("over-xp-gain").textContent = `+${score} XP`;
+  const lu = $("over-levelup");
+  lu.hidden = !leveledUp;
+  if (leveledUp) lu.textContent = `🥋 LEVEL UP — ${afterLv.name} Belt!`;
+  const nxt = nextLevel(afterXP);
+  $("over-xp-sub").textContent = nxt ? `${afterXP} XP · ${nxt.xp - afterXP} to ${nxt.name} Belt` : `${afterXP} XP · max rank`;
+  // animate the bar from the old % to the new %
+  $("over-xp-fill").style.transition = "none";
+  $("over-xp-fill").style.width = `${Math.round(levelProgress(beforeXP) * 100)}%`;
+  renderLevel();
+  $("again-btn").textContent = "Play again";
+  $("menu-btn").hidden = false;
+  setTimeout(() => {
+    $("gameover").hidden = false;
+    requestAnimationFrame(() => {
+      $("over-xp-fill").style.transition = "width 0.8s ease";
+      $("over-xp-fill").style.width = `${leveledUp ? 100 : Math.round(levelProgress(afterXP) * 100)}%`;
+    });
+    if (leveledUp) sfx.combo(5);
+  }, 700);
 }
-function renderStrikes(n) {
-  let html = "";
-  for (let i = 0; i < 3; i++) html += `<span class="strike${i >= n ? " lost" : ""}">✕</span>`;
-  $("strikes").innerHTML = html;
+
+// Three Xs; lost ones fill in left→right. With animateNew, the newest lost X pops.
+function renderStrikes(n, animateNew = false) {
+  $("strikes").innerHTML = Array.from({ length: 3 }, (_, i) =>
+    `<span class="strike${i >= n ? " lost" : ""}">✕</span>`).join("");
+  if (animateNew) {
+    const lost = $("strikes").querySelectorAll(".strike.lost");
+    lost[lost.length - 1]?.classList.add("justlost");
+  }
 }
 function showCombo(n) {
   const el = $("combo");
@@ -213,14 +244,13 @@ function flashBad() {
 
 // ============================ mode select + versus ============================
 function showModeScreen() {
-  $("mode-rank").textContent = `🥋 ${beltFor(getTotal()).name} Belt`;
+  renderLevel();
   $("mode-screen").hidden = false;
 }
 function setHudMode(m) {
   const versus = m === "versus";
   $("score").hidden = versus;
   $("strikes").hidden = versus;
-  $("belt").hidden = versus;
   $("versus-hud").hidden = !versus;
 }
 function startSolo() {
@@ -322,9 +352,8 @@ const netCallbacks = {
     updateVersusScores(scores);
   },
   onScores: (scores) => updateVersusScores(scores),
-  onOver: ({ scores, winner }) => showVersusResult(scores, winner, false),
+  onOver: ({ scores, winner }) => { addXP(scores[you] || 0); showVersusResult(scores, winner, false); },
   onOppBlade: (b) => pushOppBlade(b),
-  onBelt: (b) => { if (b.name !== currentBelt) { currentBelt = b.name; showBeltToast(b); } },
   onOppLeft: () => showVersusResult(netGame ? netGame.scores : [0, 0], null, true),
 };
 function updateVersusScores(scores) {
@@ -466,9 +495,26 @@ function wireSettings() {
     sens.value = 1.8; smooth.value = 0.6; sens.oninput(); smooth.oninput();
   };
   $("settings-btn").onclick = () => { $("settings-panel").hidden = !$("settings-panel").hidden; };
+
+  // background theme picker
+  const applyBg = (theme) => {
+    $("dojo").className = `bg-${theme}`;
+    document.querySelectorAll("#bg-options .bg-opt").forEach((b) =>
+      b.classList.toggle("sel", b.dataset.bg === theme));
+    localStorage.setItem("fn_bg", theme);
+  };
+  document.querySelectorAll("#bg-options .bg-opt").forEach((b) =>
+    (b.onclick = () => applyBg(b.dataset.bg)));
+  applyBg(localStorage.getItem("fn_bg") || "dojo");
 }
 wireSettings();
-$("start-rank").textContent = `🥋 Your rank: ${beltFor(getTotal()).name} Belt`;
+renderLevel();
+
+// Same-screen 2P is the next build — entry point is shown but explains it's coming.
+$("mode-split").addEventListener("click", () => {
+  const note = $("mode-rank");
+  note.innerHTML = "👥 Same-screen 2P is landing in the next update — for now try Versus 1v1!";
+});
 
 // ---------- 2D overlay: blade trail + debug skeleton ----------
 function drawOverlay(now) {

@@ -60,41 +60,42 @@ export class Game {
 
       if (slicing && !f.sliced &&
           segmentHitsCircle(segment.a.x, segment.a.y, segment.b.x, segment.b.y, f.x, f.y, f.radius * HIT_MARGIN)) {
-        this._slice(f, i);
+        const dx = segment.b.x - segment.a.x, dy = segment.b.y - segment.a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        this._slice(f, i, { x: dx / len, y: dy / len });
         continue;
       }
 
       if (f.isOffScreen(h)) {
         this.scene.remove(f.mesh);
         this.fruits.splice(i, 1);
-        if (this.playing && !f.sliced && !f.isBomb) this._miss();
+        if (this.playing && !f.sliced && !f.isBomb) this._strike("miss");
       }
     }
 
     this.effects.update(dt, gravity, h);
   }
 
-  _slice(fruit, idx) {
+  _slice(fruit, idx, dir) {
     fruit.sliced = true;
     this.scene.remove(fruit.mesh);
     this.fruits.splice(idx, 1);
 
     if (fruit.isBomb) {
       this.effects.explode(fruit);
-      this.playing = false;
-      this.cb.onBomb?.(fruit);
-      this._gameOver("bomb");
+      this._strike("bomb"); // bomb costs a strike now — not instant death
       return;
     }
-    this.effects.sliceBurst(fruit);
+    this.effects.sliceBurst(fruit, dir);
     const { comboSize, gained } = this.score.recordSlice(performance.now());
     this.cb.onSlice?.({ fruit, comboSize, gained, score: this.score.score });
   }
 
-  _miss() {
+  // A lost life from either a missed fruit or a sliced bomb. 3 strikes = over.
+  _strike(cause) {
     const strikes = this.score.recordMiss();
-    this.cb.onMiss?.(strikes);
-    if (this.score.dead) this._gameOver("strikes");
+    this.cb.onStrike?.(strikes, cause);
+    if (this.score.dead) this._gameOver(cause);
   }
 
   _gameOver(reason) {

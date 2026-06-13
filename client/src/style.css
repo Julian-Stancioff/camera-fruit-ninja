@@ -16,14 +16,41 @@ body {
   -webkit-user-select: none; user-select: none; touch-action: none;
 }
 
-/* ---------- dojo background ---------- */
-#dojo {
-  position: fixed; inset: 0; z-index: 0;
+/* ---------- backgrounds (selectable themes) ---------- */
+#dojo { position: fixed; inset: 0; z-index: 0; box-shadow: inset 0 0 280px rgba(0, 0, 0, 0.7); }
+.bg-dojo {
   background:
-    radial-gradient(120% 80% at 50% -5%, rgba(255, 224, 158, 0.22), transparent 55%),
-    repeating-linear-gradient(90deg, #6b4a24 0 38px, #5d3f1f 38px 41px, #69481f 41px 78px, #523818 78px 81px),
-    linear-gradient(180deg, #6e4d26 0%, #4a3318 55%, #2e1f0e 100%);
-  box-shadow: inset 0 0 260px rgba(0, 0, 0, 0.65);
+    radial-gradient(120% 80% at 50% -5%, rgba(255, 224, 158, 0.28), transparent 55%),
+    repeating-linear-gradient(90deg, #6b4a24 0 40px, #5d3f1f 40px 43px, #69481f 43px 82px, #523818 82px 85px),
+    linear-gradient(180deg, #7a5630 0%, #4a3318 55%, #261a0c 100%);
+}
+.bg-sunset {
+  background:
+    radial-gradient(60% 45% at 50% 92%, rgba(255, 200, 120, 0.55), transparent 70%),
+    radial-gradient(80% 60% at 50% 100%, rgba(255, 120, 80, 0.35), transparent 75%),
+    linear-gradient(180deg, #2a1a4a 0%, #7a2e6a 38%, #d8623e 72%, #ffb24a 100%);
+}
+.bg-neon {
+  background:
+    radial-gradient(70% 50% at 50% 100%, rgba(255, 0, 200, 0.25), transparent 70%),
+    repeating-linear-gradient(0deg, transparent 0 38px, rgba(0, 255, 230, 0.07) 38px 40px),
+    repeating-linear-gradient(90deg, transparent 0 38px, rgba(0, 255, 230, 0.07) 38px 40px),
+    linear-gradient(180deg, #07021a 0%, #160a3a 60%, #2a0a4a 100%);
+}
+.bg-night {
+  background:
+    radial-gradient(40% 30% at 78% 18%, rgba(255, 255, 220, 0.5), transparent 60%),
+    radial-gradient(2px 2px at 20% 30%, #fff, transparent), radial-gradient(2px 2px at 65% 22%, #fff, transparent),
+    radial-gradient(1.5px 1.5px at 40% 60%, #cfe, transparent), radial-gradient(1.5px 1.5px at 85% 70%, #fff, transparent),
+    linear-gradient(180deg, #050a1e 0%, #0a1838 60%, #102a4a 100%);
+}
+.bg-sakura {
+  background:
+    radial-gradient(60% 40% at 50% -5%, rgba(255, 220, 235, 0.5), transparent 60%),
+    radial-gradient(8px 8px at 18% 26%, rgba(255, 190, 215, 0.7), transparent 60%),
+    radial-gradient(6px 6px at 72% 38%, rgba(255, 190, 215, 0.6), transparent 60%),
+    radial-gradient(7px 7px at 44% 64%, rgba(255, 200, 220, 0.5), transparent 60%),
+    linear-gradient(180deg, #2a2440 0%, #5a3a6a 45%, #b06a8a 100%);
 }
 
 /* webcam: small mirrored picture-in-picture for hand orientation */
@@ -79,9 +106,9 @@ body {
   100% { opacity: 0; transform: translate(-50%, -75%) scale(1); }
 }
 
-/* settings gear + panel */
+/* settings gear + panel (above overlays so it works on menus too) */
 #settings-btn {
-  position: fixed; left: 18px; top: 84px; z-index: 8;
+  position: fixed; left: 18px; top: 84px; z-index: 12;
   width: 44px; height: 44px; border-radius: 50%;
   background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.25);
   color: #fff; font-size: 1.3rem; cursor: pointer; backdrop-filter: blur(4px);
@@ -89,7 +116,7 @@ body {
 }
 #settings-btn:hover { background: rgba(0, 0, 0, 0.7); transform: rotate(40deg); }
 #settings-panel {
-  position: fixed; left: 18px; top: 136px; z-index: 9;
+  position: fixed; left: 18px; top: 136px; z-index: 12;
   width: 268px; padding: 16px 18px; border-radius: 14px;
   background: rgba(18, 12, 4, 0.92); border: 1px solid rgba(255, 255, 255, 0.18);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55); backdrop-filter: blur(6px);
@@ -201,6 +228,68 @@ body {
 #countdown-num { font-size: 9rem; font-weight: 900; color: var(--accent);
   text-shadow: 0 4px 0 #b9881f, 0 0 40px rgba(255,210,74,0.7); animation: cdPop 1s ease-out; }
 @keyframes cdPop { 0% { transform: scale(0.4); opacity: 0; } 30% { transform: scale(1.1); opacity: 1; } 100% { transform: scale(1); opacity: 0.85; } }
+
+/* ---------- home + progression + strikes ---------- */
+.home-card {
+  max-width: 460px; width: 100%; text-align: center; max-height: 92vh; overflow-y: auto;
+  background: rgba(20, 12, 4, 0.86); border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 22px; padding: 34px 30px; box-shadow: 0 22px 64px rgba(0, 0, 0, 0.6);
+}
+.home-fruit { font-size: 2.1rem; letter-spacing: 4px; filter: drop-shadow(0 4px 8px rgba(0,0,0,.5)); }
+.home-title { margin: 8px 0 6px; font-size: 2.2rem; color: var(--accent); text-shadow: 0 3px 0 rgba(0,0,0,.45); }
+.home-tag { margin: 0 0 20px; color: #f3e7cf; line-height: 1.5; }
+
+.level-card {
+  display: flex; align-items: center; gap: 14px; text-align: left;
+  background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 14px; padding: 12px 16px; margin-bottom: 22px;
+}
+.belt-chip { width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
+  border: 2px solid rgba(255,255,255,0.5); background: #eef0f2; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+.level-info { flex: 1; min-width: 0; }
+.level-name { font-weight: 800; color: #fff; font-size: 1rem; }
+.xp-bar { height: 9px; border-radius: 5px; background: rgba(255,255,255,0.18); overflow: hidden; margin: 6px 0 3px; }
+.xp-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #ffe27a, var(--accent)); transition: width 0.6s ease; }
+.xp-sub { font-size: 0.74rem; color: #cdbfa6; }
+.level-pill {
+  display: inline-flex; align-items: center; gap: 8px; margin: 0 auto 18px;
+  background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 999px; padding: 6px 14px; font-weight: 700; font-size: 0.9rem;
+}
+
+.btn-play {
+  font: inherit; font-size: 1.4rem; font-weight: 800; color: #2a1c0d;
+  background: linear-gradient(180deg, #ffe27a, var(--accent));
+  border: none; border-radius: 999px; padding: 16px 50px; cursor: pointer;
+  box-shadow: 0 6px 0 #b9881f, 0 12px 26px rgba(0,0,0,.42); transition: transform .08s, box-shadow .08s;
+}
+.btn-play:hover { transform: translateY(-1px); }
+.btn-play:active { transform: translateY(4px); box-shadow: 0 2px 0 #b9881f; }
+.btn-play:disabled { opacity: 0.7; }
+
+/* background swatches */
+.bg-options { display: flex; gap: 8px; }
+.bg-opt { width: 38px; height: 30px; border-radius: 8px; cursor: pointer; border: 2px solid transparent; }
+.bg-opt.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(255,210,74,.4); }
+.bg-sw-dojo { background: linear-gradient(180deg, #7a5630, #2e1f0e); }
+.bg-sw-sunset { background: linear-gradient(180deg, #7a2e6a, #ffb24a); }
+.bg-sw-neon { background: linear-gradient(180deg, #160a3a, #2a0a4a); }
+.bg-sw-night { background: linear-gradient(180deg, #050a1e, #102a4a); }
+.bg-sw-sakura { background: linear-gradient(180deg, #5a3a6a, #b06a8a); }
+
+/* strikes: X marks that pop in one at a time */
+@keyframes strikePop { 0% { transform: scale(2.4); opacity: 0; } 55% { transform: scale(0.85); } 100% { transform: scale(1); opacity: 1; } }
+.strike.justlost { animation: strikePop 0.4s ease-out; }
+
+/* game-over progression */
+.over-progress { margin: 6px 0 22px; text-align: left; background: rgba(0,0,0,0.28);
+  border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 14px 16px; }
+.over-progress .lvl-row { display: flex; align-items: center; gap: 10px; }
+.over-progress .belt-chip { width: 26px; height: 26px; }
+.over-progress .level-name { font-weight: 800; }
+.xp-gain { margin-left: auto; color: var(--good); font-weight: 800; }
+.over-levelup { text-align: center; font-size: 1.3rem; font-weight: 900; color: var(--accent);
+  margin-bottom: 10px; text-shadow: 0 2px 0 #b9881f, 0 0 22px rgba(255,210,74,.7); animation: comboPop 0.9s ease-out; }
 
 /* red flash on bomb / miss */
 #overlay.flash-bad { animation: flashBad 0.4s ease-out; }
