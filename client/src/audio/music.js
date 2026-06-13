@@ -15,6 +15,13 @@ const PROG = [
   { bass: 65.41, notes: [261.63, 329.63, 392.00] }, // C:  C E G
   { bass: 49.00, notes: [196.00, 246.94, 293.66] }, // G:  G B D
 ];
+// Catchy original lead riff — 4 bars × 8 eighth-notes (0 = rest). Plays from beat 1.
+const LEAD = [
+  [440.00, 0, 659.25, 523.25, 440.00, 0, 329.63, 0], // over Am
+  [349.23, 0, 523.25, 440.00, 349.23, 0, 261.63, 0], // over F
+  [523.25, 0, 659.25, 587.33, 523.25, 0, 392.00, 0], // over C
+  [392.00, 0, 587.33, 493.88, 392.00, 0, 293.66, 0], // over G
+];
 
 function ac() {
   if (!ctx) {
@@ -60,21 +67,23 @@ function noise(t, dur, hp, peak) {
   s.connect(f).connect(g).connect(master); s.start(t);
 }
 
+// Full arcade arrangement — plays at FULL energy from beat 1 (no slow build).
 function scheduleStep(s, t) {
-  const I = intensity, bar = Math.floor(s / 16) % 4, chord = PROG[bar], st = s % 16;
-  if (st % 4 === 0) kick(t);                          // four-on-floor
-  if (I > 0.55 && st === 10) kick(t);                 // extra kick when intense
-  if (I > 0.3 && (st === 4 || st === 12)) noise(t, 0.12, 1800, 0.22 * Math.min(1, I + 0.3)); // snare
-  if (I > 0.2 && st % 2 === 1) noise(t, 0.03, 8000, 0.05 + 0.06 * I);   // hats
-  if (I > 0.65 && st % 2 === 0) noise(t, 0.025, 9000, 0.05 * I);
-  if (st === 0 || st === 8) tone("triangle", chord.bass, t, 0.5, 0.32); // bass
-  if (I > 0.4) tone("square", chord.notes[s % chord.notes.length], t, 0.12, 0.045 + 0.05 * I); // arp
-  if (I > 0.72 && st % 8 === 6) tone("sawtooth", chord.notes[s % chord.notes.length] * 2, t, 0.22, 0.05 * I); // lead
+  const bar = Math.floor(s / 16) % 4, chord = PROG[bar], st = s % 16;
+  if (st % 4 === 0) kick(t);                                   // four-on-floor
+  if (st === 10) kick(t);                                      // groove kick
+  if (st === 4 || st === 12) noise(t, 0.13, 1800, 0.28);       // snare on 2 & 4
+  if (st % 2 === 1) noise(t, 0.03, 9000, 0.07);                // offbeat hats
+  if (st % 4 === 2) noise(t, 0.022, 9500, 0.045);
+  if (st === 0 || st === 8) tone("triangle", chord.bass, t, 0.42, 0.34);       // bass root
+  if (st === 6 || st === 14) tone("triangle", chord.bass * 1.5, t, 0.18, 0.2); // bass drive
+  if (st % 4 === 0) tone("square", chord.notes[(s / 4 | 0) % chord.notes.length], t, 0.12, 0.05); // chord stab
+  if (st % 2 === 0) { const n = LEAD[bar][st / 2]; if (n) tone("triangle", n, t, 0.17, 0.11); }   // lead riff
 }
 
 function loop() {
   const now = ac().currentTime;
-  const stepDur = 60 / (96 + intensity * 64) / 4; // 96→160 BPM, 16th notes
+  const stepDur = 60 / 124 / 4; // fixed 124 BPM, 16th notes
   while (nextTime < now + LOOKAHEAD) {
     scheduleStep(step, nextTime);
     nextTime += stepDur; step++;
@@ -84,9 +93,9 @@ function loop() {
 export function start() {
   ac();
   if (playing) return;
-  playing = true; step = 0; nextTime = ctx.currentTime + 0.1;
+  playing = true; step = 0; nextTime = ctx.currentTime + 0.06;
   master.gain.cancelScheduledValues(ctx.currentTime);
-  master.gain.linearRampToValueAtTime(volume * MAX_GAIN, ctx.currentTime + 0.6);
+  master.gain.linearRampToValueAtTime(volume * MAX_GAIN, ctx.currentTime + 0.12); // straight into the song
   timer = setInterval(loop, TICK_MS);
 }
 export function stop() {

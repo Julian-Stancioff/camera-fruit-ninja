@@ -42,8 +42,12 @@
       </div>
     </div>
     <div class="set-row">
-      <label>Music <span id="set-music-val"></span></label>
-      <input type="range" id="set-music" min="0" max="1" step="0.05" />
+      <label>Menu music <span id="set-menuvol-val"></span></label>
+      <input type="range" id="set-menuvol" min="0" max="1" step="0.05" />
+    </div>
+    <div class="set-row">
+      <label>In-game music <span id="set-gamevol-val"></span></label>
+      <input type="range" id="set-gamevol" min="0" max="1" step="0.05" />
     </div>
     <button id="set-reset" class="set-reset">Reset feel to defaults</button>
   </div>
@@ -105,17 +109,27 @@
     </div>
   </div>
 
-  <!-- ===================== MODE SELECT ===================== -->
-  <div id="mode-screen" hidden>
-    <div class="home-card">
-      <div class="start-emoji">🥷</div>
-      <h1 class="home-title">Choose a mode</h1>
-      <div class="level-pill" id="mode-rank"></div>
-      <div class="mode-buttons">
-        <button id="mode-solo" class="mode-big">🍉 Solo<span>Classic — slice, combo, rank up</span></button>
-        <button id="mode-versus" class="mode-big">⚔️ Versus 1v1<span>Online — race a friend by code/link</span></button>
-        <button id="mode-split" class="mode-big">👥 Same-screen 2P<span>Split-screen, two hands, 3-min race</span></button>
-      </div>
+  <!-- ===================== MODE SELECT (full-screen arcade) ===================== -->
+  <div id="mode-screen" hidden class="arcade-modes">
+    <div class="arcade-glow"></div>
+    <h1 class="modes-title">SELECT MODE</h1>
+    <div class="level-pill" id="mode-rank"></div>
+    <div class="modes-grid">
+      <button id="mode-solo" class="mode-panel">
+        <span class="mp-ico">🍉</span>
+        <span class="mp-title">SOLO</span>
+        <span class="mp-sub">Slice · combo · rank up your belt</span>
+      </button>
+      <button id="mode-versus" class="mode-panel">
+        <span class="mp-ico">⚔️</span>
+        <span class="mp-title">VERSUS&nbsp;1V1</span>
+        <span class="mp-sub">Online — race a friend by code or link</span>
+      </button>
+      <button id="mode-split" class="mode-panel">
+        <span class="mp-ico">👥</span>
+        <span class="mp-title">2&nbsp;PLAYER</span>
+        <span class="mp-sub">Same screen · two hands · 3-min race</span>
+      </button>
     </div>
   </div>
 

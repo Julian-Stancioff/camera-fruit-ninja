@@ -31,16 +31,21 @@ function env(node, gain, attack, dur) {
 }
 
 export function slice() {
-  const c = ac();
+  const c = ac(), t = c.currentTime;
+  // swish (filtered noise)
   const src = c.createBufferSource();
-  src.buffer = noiseBuffer(0.18);
+  src.buffer = noiseBuffer(0.2);
   const bp = c.createBiquadFilter();
-  bp.type = "bandpass"; bp.frequency.setValueAtTime(1800, c.currentTime);
-  bp.frequency.exponentialRampToValueAtTime(600, c.currentTime + 0.18);
-  bp.Q.value = 0.8;
-  src.connect(bp);
-  env(bp, 0.5, 0.005, 0.2);
-  src.start();
+  bp.type = "bandpass"; bp.frequency.setValueAtTime(2200, t);
+  bp.frequency.exponentialRampToValueAtTime(500, t + 0.2);
+  bp.Q.value = 0.9;
+  src.connect(bp); env(bp, 0.55, 0.004, 0.22); src.start();
+  // wet "squelch" — a quick downward sine blip for juicy impact
+  const o = c.createOscillator();
+  o.type = "sine";
+  o.frequency.setValueAtTime(620, t);
+  o.frequency.exponentialRampToValueAtTime(160, t + 0.13);
+  env(o, 0.32, 0.005, 0.15); o.start(); o.stop(t + 0.16);
 }
 
 export function combo(n = 3) {
@@ -86,12 +91,19 @@ export function miss() {
 
 export function gameover() {
   const c = ac();
-  [440, 350, 262, 196].forEach((f, i) => {
+  // descending "nuh-nuh-nuhhh" sting: three falling notes, last one held + wobbly.
+  const notes = [392, 311, 220];
+  notes.forEach((f, i) => {
+    const start = c.currentTime + i * 0.26;
     const o = c.createOscillator();
-    o.type = "triangle";
-    o.frequency.setValueAtTime(f, c.currentTime + i * 0.16);
-    env(o, 0.3, 0.01, 0.16 * (i + 1) + 0.3);
-    o.start(c.currentTime + i * 0.16);
-    o.stop(c.currentTime + i * 0.16 + 0.4);
+    o.type = "sawtooth";
+    o.frequency.setValueAtTime(f, start);
+    o.frequency.exponentialRampToValueAtTime(f * 0.97, start + 0.24); // slight droop
+    const lp = c.createBiquadFilter();
+    lp.type = "lowpass"; lp.frequency.value = 1400;
+    const dur = i === notes.length - 1 ? 0.7 : 0.24;
+    o.connect(lp);
+    env(lp, 0.32, 0.01, dur);
+    o.start(start); o.stop(start + dur + 0.05);
   });
 }

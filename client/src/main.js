@@ -108,16 +108,21 @@ function mapPoint(nx, ny) {
   return { x: (1 - gx) * cw, y: gy * ch };
 }
 
-// ---------- start music on the very first interaction (audio needs a gesture) ----------
+// ---------- music helpers (separate menu / in-game volumes) ----------
+const menuVol = () => { const v = parseFloat(localStorage.getItem("fn_menu_vol") ?? "0.7"); return isNaN(v) ? 0.7 : v; };
+const gameVol = () => { const v = parseFloat(localStorage.getItem("fn_game_vol") ?? "0.7"); return isNaN(v) ? 0.7 : v; };
+function musicMenu() { music.start(); music.setVolume(menuVol()); }
+function musicGame() { music.start(); music.setVolume(gameVol()); }
+// Game over: music stops and stays stopped until a new game / the home screen.
+function musicGameOver() { music.stop(); sfx.gameover(); }
+
+// Start music on the very first interaction (audio needs a gesture) — at the menu.
 let musicStarted = false;
 function kickMusic() {
   if (musicStarted) return;
   musicStarted = true;
-  const v = parseFloat(localStorage.getItem("fn_music_vol") ?? "0.7");
   music.resume();
-  music.start();
-  music.setVolume(isNaN(v) ? 0.7 : v);
-  music.setIntensity(0.22);
+  musicMenu();
 }
 document.addEventListener("pointerdown", kickMusic, { once: true });
 document.addEventListener("keydown", kickMusic, { once: true });
@@ -126,9 +131,9 @@ document.addEventListener("keydown", kickMusic, { once: true });
 $("start-btn").addEventListener("click", start);
 $("again-btn").addEventListener("click", () => {
   $("gameover").hidden = true;
-  if (mode === "versus") { netGame.clear(); socket.emit("rematch"); }
-  else if (mode === "split") { splitGame.clear(); music.setIntensity(0.6); runCountdown(3, () => splitGame.start()); }
-  else { resetHud(); game.reset(); game.start(); }
+  if (mode === "versus") { netGame.clear(); socket.emit("rematch"); } // music restarts on server 'start'
+  else if (mode === "split") { splitGame.clear(); musicGame(); runCountdown(3, () => splitGame.start()); }
+  else { resetHud(); musicGame(); game.reset(); game.start(); }
 });
 $("menu-btn").addEventListener("click", backToMenu);
 $("toggle-skeleton").addEventListener("change", (e) => (showSkeleton = e.target.checked));
@@ -156,7 +161,7 @@ async function start() {
     resizeAll();
 
     sfx.resume();
-    music.setIntensity(0.22);
+    musicMenu();
     $("start-screen").classList.add("gone");
     if (DEBUG) $("hud").hidden = false; // dev HUD only with ?debug
     running = true;
@@ -182,7 +187,7 @@ function setNote(t, isError = false) {
 
 // ---------- game callbacks → UI ----------
 const callbacks = {
-  onStart() { soloStartTs = performance.now(); music.setIntensity(0); },
+  onStart() { soloStartTs = performance.now(); },
   onSlice({ comboSize, gained, score }) {
     setScore(score);
     sfx.slice();
@@ -195,8 +200,8 @@ const callbacks = {
     if (cause === "bomb") sfx.bomb(); else sfx.miss();
   },
   onGameOver({ reason, score, best }) {
-    sfx.gameover();
-    music.setIntensity(0.15);
+    music.stop();    // music stops on game over…
+    sfx.gameover();  // …and the descending "nuh-nuh-nuh" sting plays
     showSoloGameOver(reason, score, best);
   },
 };
@@ -280,7 +285,7 @@ function flashBad() {
 // ============================ mode select + versus ============================
 function showModeScreen() {
   renderLevel();
-  music.setIntensity(0.22);
+  musicMenu();
   $("mode-screen").hidden = false;
 }
 function setHudMode(m) {
@@ -298,7 +303,7 @@ function startSolo() {
   if (!game) game = new Game(scene, effects, callbacks);
   controller = game;
   resetHud();
-  music.setIntensity(0.25);
+  musicGame();
   enterReady({
     needHands: 1,
     label: "Show your hand to the camera ✋",
@@ -384,7 +389,7 @@ function onMatchStart(s) {
   $("gameover").hidden = true;
   $("game-hud").hidden = false;
   setHudMode("versus");
-  music.setIntensity(0.6);
+  musicGame();
   resetVersusHud(s.durationMs);
   runCountdown(Math.max(1, Math.round((s.countdownMs || 3000) / 1000)), () => netGame.begin(s.gravity));
 }
@@ -423,6 +428,7 @@ function updateVersusScores(scores) {
   $("vs-opp-score").textContent = scores[1 - you];
 }
 function showVersusResult(scores, winner, oppLeft) {
+  music.stop(); // music stops at the end of a match
   const youS = scores[you], oppS = scores[1 - you];
   let title, reason;
   if (oppLeft) { title = "Opponent left"; reason = "They disconnected — you win by default."; }
@@ -473,7 +479,7 @@ function startSplit() {
   $("gameover").hidden = true;
   $("game-hud").hidden = false;
   setHudMode("split");
-  music.setIntensity(0.6);
+  musicGame();
   if (!splitGame) splitGame = new SplitGame(scene.renderer, splitCallbacks);
   for (const k of ["left", "right"]) {
     const s = splitSide[k]; s.prev = s.cur = null; s.miss = 0; s.trail.length = 0; s.fx.reset(); s.fy.reset();
@@ -501,7 +507,7 @@ function endSplitView() {
 }
 function showSplitResult(scores, winner) {
   addXP(Math.max(scores[0], scores[1]));
-  music.setIntensity(0.2);
+  musicGameOver();
   $("over-title").textContent = winner === -1 ? "Tie game!" : `Player ${winner + 1} wins! 🏆`;
   $("over-reason").textContent = `Final score — P1 ${scores[0]} · P2 ${scores[1]}`;
   $("over-score").textContent = scores[0]; $("over-score-lbl").textContent = "Player 1";
@@ -758,16 +764,17 @@ function wireSettings() {
   $("set-reset").onclick = () => {
     sens.value = 1.8; smooth.value = 0.6; sens.oninput(); smooth.oninput();
   };
-  // music volume slider
-  const mvol = $("set-music");
-  mvol.value = localStorage.getItem("fn_music_vol") ?? "0.7";
-  const updMusic = () => { $("set-music-val").textContent = `${Math.round(mvol.value * 100)}%`; };
-  updMusic();
-  mvol.oninput = () => {
-    music.setVolume(parseFloat(mvol.value));
-    localStorage.setItem("fn_music_vol", mvol.value);
-    updMusic();
+  // music volume sliders (separate menu / in-game); moving either previews it live
+  const menuv = $("set-menuvol"), gamev = $("set-gamevol");
+  menuv.value = localStorage.getItem("fn_menu_vol") ?? "0.7";
+  gamev.value = localStorage.getItem("fn_game_vol") ?? "0.7";
+  const updVols = () => {
+    $("set-menuvol-val").textContent = `${Math.round(menuv.value * 100)}%`;
+    $("set-gamevol-val").textContent = `${Math.round(gamev.value * 100)}%`;
   };
+  updVols();
+  menuv.oninput = () => { localStorage.setItem("fn_menu_vol", menuv.value); music.setVolume(parseFloat(menuv.value)); updVols(); };
+  gamev.oninput = () => { localStorage.setItem("fn_game_vol", gamev.value); music.setVolume(parseFloat(gamev.value)); updVols(); };
   $("settings-btn").onclick = () => { $("settings-panel").hidden = !$("settings-panel").hidden; };
 
   // background theme picker

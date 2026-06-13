@@ -26,6 +26,7 @@ export class Game {
     this.score.reset();
     this.spawner = new FruitSpawner();
     this._over = false;
+    this._lastStrike = 0;
     this.playing = true;
     this.cb.onStart?.();
   }
@@ -92,7 +93,12 @@ export class Game {
   }
 
   // A lost life from either a missed fruit or a sliced bomb. 3 strikes = over.
+  // A short grace window after any hit prevents cascade losses (you don't lose two
+  // lives at once when several fruit are falling together).
   _strike(cause) {
+    const now = performance.now();
+    if (this._lastStrike && now - this._lastStrike < 1200) return;
+    this._lastStrike = now;
     const strikes = this.score.recordMiss();
     this.cb.onStrike?.(strikes, cause);
     if (this.score.dead) this._gameOver(cause);

@@ -55,7 +55,8 @@ const pineappleTex = () => canvasTexture((x, s) => {
 const kiwiTex = () => orangeTex("#7a5230", "#3d2a18");
 
 function glossy(opts) {
-  return new THREE.MeshPhongMaterial({ shininess: 55, specular: 0x333333, ...opts });
+  // brighter, tighter highlight = juicier, more 3D-looking fruit
+  return new THREE.MeshPhongMaterial({ shininess: 95, specular: 0x666666, ...opts });
 }
 
 // type config: builder + the flesh/juice colors used by slicing effects

@@ -43,15 +43,16 @@ export class Effects {
         rx: rand(-4, 4), ry: rand(-4, 4), rz: s * rand(3, 7),
       });
     });
-    this._juice(fruit.x, fruit.y, fruit.meta.juice, 26, dir, fruit.vx);
-    this._flash(fruit.x, fruit.y, fruit.radius * 1.5, 0xffffff, 0.8);
+    this._juice(fruit.x, fruit.y, fruit.meta.juice, 38, dir, fruit.vx); // extra juicy
+    this._flash(fruit.x, fruit.y, fruit.radius * 1.6, 0xffffff, 0.85);
   }
 
   explode(fruit) {
-    this._juice(fruit.x, fruit.y, 0x2a2a2a, 18, null, 0, 560);
-    this._juice(fruit.x, fruit.y, 0xff7a1a, 24, null, 0, 660);
-    this._juice(fruit.x, fruit.y, 0xffd24a, 14, null, 0, 760);
-    this._flash(fruit.x, fruit.y, fruit.radius * 2.2, 0xffae3a, 0.95);
+    // lighter than before so the bomb hit doesn't cause a frame hitch
+    this._juice(fruit.x, fruit.y, 0x2a2a2a, 12, null, 0, 560);
+    this._juice(fruit.x, fruit.y, 0xff7a1a, 16, null, 0, 660);
+    this._juice(fruit.x, fruit.y, 0xffd24a, 8, null, 0, 760);
+    this._flash(fruit.x, fruit.y, fruit.radius * 2.0, 0xffae3a, 0.95);
   }
 
   _flash(x, y, r, color, opacity) {
