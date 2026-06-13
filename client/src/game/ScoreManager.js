@@ -20,8 +20,9 @@ export class ScoreManager {
     this._recent = this._recent.filter((t) => now - t < COMBO_MS);
     this._recent.push(now);
     const comboSize = this._recent.length;
+    // Combos add escalating points — slicing several at once is worth far more.
     let gained = 1;
-    if (comboSize >= 3) gained += comboSize; // combo bonus, like the original
+    if (comboSize >= 2) gained += comboSize;
     this.score += gained;
     if (this.score > this.best) {
       this.best = this.score;

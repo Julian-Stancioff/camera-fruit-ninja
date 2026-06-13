@@ -40,6 +40,9 @@
         <button class="bg-opt bg-sw-sakura" data-bg="sakura" title="Sakura"></button>
       </div>
     </div>
+    <div class="set-row">
+      <label class="music-toggle"><input type="checkbox" id="set-music" checked /> Music</label>
+    </div>
     <button id="set-reset" class="set-reset">Reset feel to defaults</button>
   </div>
 
@@ -47,6 +50,7 @@
   <div id="game-hud" hidden>
     <div id="strikes" aria-label="lives"></div>
     <div id="score">0</div>
+    <div id="solo-timer" hidden>0:00</div>
     <!-- versus / split top bar -->
     <div id="versus-hud" hidden>
       <div class="vs-side you"><span class="vs-label">You</span><span id="vs-you-score">0</span></div>
@@ -69,15 +73,25 @@
     </div>
   </div>
 
-  <!-- ===================== HOME ===================== -->
-  <div id="start-screen">
-    <div class="home-card">
-      <div class="home-fruit" aria-hidden="true">🍉🍊🍓🥝🍋</div>
-      <h1 class="home-title">Camera Fruit&nbsp;Ninja</h1>
-      <p class="home-tag">Your hand is the blade. Slice the fruit, dodge the bombs,
-        and rank up your belt.</p>
-
-      <div class="level-card" id="home-level">
+  <!-- ===================== HOME (full-screen arcade) ===================== -->
+  <div id="start-screen" class="arcade">
+    <div class="arcade-glow"></div>
+    <div class="arcade-fruit" aria-hidden="true">
+      <span style="--d:0s;  --x:8vw;  --r:-20deg">🍉</span>
+      <span style="--d:2.1s;--x:24vw; --r:30deg">🍊</span>
+      <span style="--d:4.4s;--x:42vw; --r:-15deg">🍓</span>
+      <span style="--d:1.2s;--x:60vw; --r:25deg">🥝</span>
+      <span style="--d:3.3s;--x:76vw; --r:-30deg">🍋</span>
+      <span style="--d:5.0s;--x:90vw; --r:18deg">🍍</span>
+      <span style="--d:6.0s;--x:34vw; --r:-22deg">🍎</span>
+      <span style="--d:2.8s;--x:68vw; --r:12deg">🍉</span>
+    </div>
+    <div class="arcade-content">
+      <div class="arcade-eyebrow">⚔ CAMERA-CONTROLLED ⚔</div>
+      <h1 class="arcade-title">FRUIT<span class="arcade-title2">NINJA</span></h1>
+      <p class="arcade-tag">Your hand is the blade. Slice everything.</p>
+      <button id="start-btn" class="arcade-play">▶ PLAY</button>
+      <div class="arcade-rank" id="home-level">
         <span class="belt-chip" id="home-belt-chip"></span>
         <div class="level-info">
           <div class="level-name" id="home-level-name">Level 1 · White Belt</div>
@@ -85,9 +99,7 @@
           <div class="xp-sub" id="home-xp-sub">0 XP</div>
         </div>
       </div>
-
-      <button id="start-btn" class="btn-play">▶ &nbsp;Play</button>
-      <p class="start-note" id="start-note">Allow the camera when asked — it runs on your device, nothing is uploaded.</p>
+      <p class="start-note" id="start-note">Allow the camera when asked — it all runs on your device, nothing is uploaded.</p>
     </div>
   </div>
 

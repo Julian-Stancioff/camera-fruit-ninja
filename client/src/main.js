@@ -11,6 +11,7 @@ import { addXP, getXP, levelFor, levelProgress, nextLevel } from "./game/belts.j
 import { connect } from "./net/net.js";
 import { NetGame } from "./net/NetGame.js";
 import * as sfx from "./audio/sfx.js";
+import * as music from "./audio/music.js";
 
 const $ = (id) => document.getElementById(id);
 const video = $("webcam");
@@ -30,6 +31,7 @@ let mode = "solo";          // "solo" | "versus"
 let controller = null;       // active game controller (Game or NetGame)
 let socket = null, netGame = null, you = 0, oppName = "Opponent";
 let lastBladeEmit = 0;
+let soloStartTs = 0, lastMusicTs = 0;
 const oppTrail = [];
 
 // Tunable feel — overridable via URL (?gain=2.2&mincut=1.0&beta=0.02&debug) so we
@@ -128,6 +130,10 @@ async function start() {
     resizeAll();
 
     sfx.resume();
+    music.resume();
+    music.setMuted(localStorage.getItem("fn_music") === "off");
+    music.start();
+    music.setIntensity(0.22);
     $("start-screen").classList.add("gone");
     if (DEBUG) $("hud").hidden = false; // dev HUD only with ?debug
     running = true;
@@ -153,10 +159,11 @@ function setNote(t, isError = false) {
 
 // ---------- game callbacks → UI ----------
 const callbacks = {
-  onSlice({ comboSize, score }) {
+  onStart() { soloStartTs = performance.now(); music.setIntensity(0); },
+  onSlice({ comboSize, gained, score }) {
     setScore(score);
     sfx.slice();
-    if (comboSize >= 2) { showCombo(comboSize); sfx.combo(comboSize); }
+    if (comboSize >= 2) { showCombo(comboSize, gained); sfx.combo(comboSize); }
   },
   // A lost life from a missed fruit or a sliced bomb (3 strikes = over).
   onStrike(strikesLeft, cause) {
@@ -166,6 +173,7 @@ const callbacks = {
   },
   onGameOver({ reason, score, best }) {
     sfx.gameover();
+    music.setIntensity(0.15);
     showSoloGameOver(reason, score, best);
   },
 };
@@ -229,12 +237,16 @@ function renderStrikes(n, animateNew = false) {
     lost[lost.length - 1]?.classList.add("justlost");
   }
 }
-function showCombo(n) {
+function showCombo(n, gained) {
   const el = $("combo");
-  el.textContent = `${n}  COMBO!`;
+  el.textContent = `${n}× COMBO   +${gained}!`;
   el.classList.remove("show");
   void el.offsetWidth;
   el.classList.add("show");
+}
+function formatTime(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 function flashBad() {
   overlay.classList.remove("flash-bad");
@@ -245,12 +257,14 @@ function flashBad() {
 // ============================ mode select + versus ============================
 function showModeScreen() {
   renderLevel();
+  music.setIntensity(0.22);
   $("mode-screen").hidden = false;
 }
 function setHudMode(m) {
   const versus = m === "versus";
   $("score").hidden = versus;
   $("strikes").hidden = versus;
+  $("solo-timer").hidden = m !== "solo";
   $("versus-hud").hidden = !versus;
 }
 function startSolo() {
@@ -324,6 +338,7 @@ function onMatchStart(s) {
   $("gameover").hidden = true;
   $("game-hud").hidden = false;
   setHudMode("versus");
+  music.setIntensity(0.6);
   resetVersusHud(s.durationMs);
   runCountdown(Math.max(1, Math.round((s.countdownMs || 3000) / 1000)), () => netGame.begin(s.gravity));
 }
@@ -449,6 +464,16 @@ function tick(now) {
   }
   while (trail.length && now - trail[0].t > TRAIL_MS) trail.shift();
 
+  // Solo: count-up timer + music that intensifies with time/score.
+  if (mode === "solo" && game && game.playing) {
+    const el = (now - soloStartTs) / 1000;
+    $("solo-timer").textContent = formatTime(el);
+    if (now - lastMusicTs > 400) {
+      music.setIntensity(Math.min(1, el / 90 + game.score.score / 500));
+      lastMusicTs = now;
+    }
+  }
+
   if (controller) controller.update(dt, segment);
   if (scene) scene.render();
   drawOverlay(now);
@@ -493,6 +518,13 @@ function wireSettings() {
   };
   $("set-reset").onclick = () => {
     sens.value = 1.8; smooth.value = 0.6; sens.oninput(); smooth.oninput();
+  };
+  // music on/off
+  const musicOn = localStorage.getItem("fn_music") !== "off";
+  $("set-music").checked = musicOn;
+  $("set-music").onchange = (e) => {
+    localStorage.setItem("fn_music", e.target.checked ? "on" : "off");
+    music.setMuted(!e.target.checked);
   };
   $("settings-btn").onclick = () => { $("settings-panel").hidden = !$("settings-panel").hidden; };
 
