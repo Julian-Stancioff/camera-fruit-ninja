@@ -21,9 +21,12 @@ export class HandTracker {
       baseOptions: { modelAssetPath: MODEL_PATH, delegate },
       runningMode: "VIDEO",
       numHands: this.numHands,
-      minHandDetectionConfidence: 0.5,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
+      // v2 robust tracking: lower presence/tracking thresholds so MediaPipe HOLDS
+      // the hand through marginal frames (motion blur, odd angles) instead of
+      // dropping it — far fewer "it stopped tracking" gaps.
+      minHandDetectionConfidence: 0.4,
+      minHandPresenceConfidence: 0.3,
+      minTrackingConfidence: 0.3,
     });
     try {
       this.landmarker = await HandLandmarker.createFromOptions(fileset, opts("GPU"));

@@ -60,6 +60,8 @@ let GAIN_X = settings.sensitivity, GAIN_Y = settings.sensitivity;
 // blade state (screen px)
 let bladePrev = null, bladeCur = null;
 let lastHandTs = 0, lastDetectTs = 0;
+let misses = 0;                 // consecutive frames MediaPipe found no hand
+const COAST_FRAMES = 8;         // ~250ms: hold the blade through brief dropouts
 const trail = [];
 const TRAIL_MS = 150;
 const _sp = smoothingParams(settings.smoothing);
@@ -388,6 +390,10 @@ function tick(now) {
 
     if (result.present && result.blade) {
       const raw = mapPoint(result.blade.x, result.blade.y);
+      // Reacquire after a multi-frame gap: snap the filter to the new point and
+      // don't form a slice segment this frame (avoids a ghost slice across the gap).
+      if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; }
+      misses = 0;
       // Smooth in pixel space: clean cursor → clean slice segments → reliable cuts.
       const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
       if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
@@ -399,8 +405,16 @@ function tick(now) {
         lastBladeEmit = now;
       }
     } else {
-      cursorFX.reset(); cursorFY.reset();
-      bladePrev = null; bladeCur = null;
+      // v2: coast through brief MediaPipe dropouts instead of dropping the blade
+      // (the #1 cause of "it works then it won't"). Hold the last position for a
+      // few frames so momentary losses are invisible; only truly drop after that.
+      misses++;
+      if (misses <= COAST_FRAMES && bladeCur) {
+        trail.push({ x: bladeCur.x, y: bladeCur.y, t: now }); // keep the blade alive
+      } else {
+        cursorFX.reset(); cursorFY.reset();
+        bladePrev = null; bladeCur = null;
+      }
     }
     updateHandHint(now);
   }
