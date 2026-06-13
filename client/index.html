@@ -42,6 +42,12 @@
       <span id="belt-name">White Belt</span>
       <span class="belt-bar"><i id="belt-fill"></i></span>
     </div>
+    <!-- versus top bar (shown only in 1v1) -->
+    <div id="versus-hud" hidden>
+      <div class="vs-side you"><span class="vs-label">You</span><span id="vs-you-score">0</span></div>
+      <div class="vs-timer" id="vs-timer">90</div>
+      <div class="vs-side opp"><span class="vs-label" id="vs-opp-name">Opponent</span><span id="vs-opp-score">0</span></div>
+    </div>
     <div id="combo"></div>
     <div id="belt-toast"></div>
   </div>
@@ -78,12 +84,54 @@
       <h2 id="over-title">Game Over</h2>
       <p id="over-reason"></p>
       <div class="over-scores">
-        <div><span class="over-num" id="over-score">0</span><span class="over-lbl">Score</span></div>
-        <div><span class="over-num" id="over-best">0</span><span class="over-lbl">Best</span></div>
+        <div><span class="over-num" id="over-score">0</span><span class="over-lbl" id="over-score-lbl">Score</span></div>
+        <div><span class="over-num" id="over-best">0</span><span class="over-lbl" id="over-best-lbl">Best</span></div>
       </div>
       <button id="again-btn">Play again</button>
+      <button id="menu-btn" class="set-reset" hidden style="margin-top:12px">← Back to menu</button>
     </div>
   </div>
+
+  <!-- Mode select (after camera starts) -->
+  <div id="mode-screen" hidden>
+    <div class="start-card">
+      <div class="start-emoji">🥷</div>
+      <h1>Choose a mode</h1>
+      <p class="start-rank" id="mode-rank"></p>
+      <div class="mode-buttons">
+        <button id="mode-solo" class="mode-big">🍉 Solo<span>Classic — slice, combo, survive</span></button>
+        <button id="mode-versus" class="mode-big">⚔️ Versus 1v1<span>Race a friend in real time</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Versus lobby -->
+  <div id="versus-screen" hidden>
+    <div class="start-card">
+      <h1>Versus 1v1</h1>
+      <div id="vs-choose">
+        <p class="start-sub">Create a game and share the code, or join your friend's.</p>
+        <button id="vs-create" class="mode-big">➕ Create a game</button>
+        <div class="vs-or">— or —</div>
+        <div class="vs-join">
+          <input id="vs-code" maxlength="4" placeholder="CODE" autocomplete="off" autocapitalize="characters" />
+          <button id="vs-join-btn">Join</button>
+        </div>
+        <p class="start-note error" id="vs-error" hidden></p>
+      </div>
+      <div id="vs-wait" hidden>
+        <p class="start-sub">Share this with your opponent:</p>
+        <div class="vs-code-display" id="vs-code-display">----</div>
+        <input id="vs-link" class="vs-link" readonly />
+        <button id="vs-copy" class="mode-big">📋 Copy link</button>
+        <p class="start-note" id="vs-wait-note">Waiting for your opponent to join…</p>
+      </div>
+      <button id="vs-back" class="set-reset" style="margin-top:14px">← Back</button>
+    </div>
+  </div>
+
+  <!-- Countdown -->
+  <div id="countdown" hidden><span id="countdown-num"></span></div>
 
   <script type="module" src="/src/main.js"></script>
 </body>

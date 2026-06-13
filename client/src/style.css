@@ -8,6 +8,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--wood-2); }
 body {
   font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
@@ -136,6 +137,64 @@ body {
 }
 .start-rank { margin: 0 0 18px; font-weight: 700; color: var(--accent); }
 
+/* ---------- mode select + versus lobby ---------- */
+.mode-buttons { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
+.mode-big {
+  font: inherit; font-size: 1.2rem; font-weight: 800; color: #2a1c0d;
+  background: linear-gradient(180deg, #ffe27a, var(--accent));
+  border: none; border-radius: 14px; padding: 16px 22px; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  box-shadow: 0 5px 0 #b9881f, 0 10px 22px rgba(0, 0, 0, 0.35);
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+.mode-big span { font-size: 0.78rem; font-weight: 600; opacity: 0.8; }
+.mode-big:hover { transform: translateY(-1px); }
+.mode-big:active { transform: translateY(3px); box-shadow: 0 2px 0 #b9881f; }
+.vs-or { margin: 14px 0; color: #cdbfa6; font-weight: 700; }
+.vs-join { display: flex; gap: 10px; }
+#vs-code {
+  flex: 1; font: inherit; font-size: 1.4rem; font-weight: 800; letter-spacing: 0.3em;
+  text-align: center; text-transform: uppercase; padding: 12px;
+  border: 2px solid var(--accent); border-radius: 12px; background: rgba(0,0,0,0.3); color: #fff;
+}
+.vs-join button {
+  font: inherit; font-weight: 800; color: #2a1c0d; background: var(--accent);
+  border: none; border-radius: 12px; padding: 0 22px; cursor: pointer;
+}
+.vs-code-display {
+  font-size: 3.2rem; font-weight: 900; letter-spacing: 0.3em; color: var(--accent);
+  margin: 10px 0; text-shadow: 0 2px 0 rgba(0,0,0,0.4);
+}
+.vs-link {
+  width: 100%; font: inherit; font-size: 0.82rem; padding: 10px 12px; margin-bottom: 12px;
+  border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; background: rgba(0,0,0,0.3); color: #cdbfa6;
+}
+
+/* ---------- versus in-game HUD ---------- */
+#versus-hud {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 22px;
+}
+.vs-side { display: flex; flex-direction: column; align-items: center; min-width: 96px;
+  background: rgba(0,0,0,0.42); border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 12px; padding: 6px 16px; backdrop-filter: blur(4px); }
+.vs-side .vs-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #cdbfa6; }
+.vs-side span:last-child { font-size: 1.8rem; font-weight: 800; }
+.vs-side.you { border-color: rgba(255,210,74,0.6); }
+.vs-side.you span:last-child { color: var(--accent); }
+.vs-side.opp { border-color: rgba(120,200,255,0.6); }
+.vs-side.opp span:last-child { color: #7ac8ff; }
+.vs-timer { font-size: 2.2rem; font-weight: 900; color: #fff; min-width: 70px; text-align: center;
+  text-shadow: 0 2px 0 rgba(0,0,0,0.5); }
+.vs-timer.low { color: var(--bad); }
+
+/* ---------- countdown ---------- */
+#countdown { position: fixed; inset: 0; z-index: 11; display: grid; place-items: center;
+  background: rgba(8,4,2,0.5); pointer-events: none; }
+#countdown-num { font-size: 9rem; font-weight: 900; color: var(--accent);
+  text-shadow: 0 4px 0 #b9881f, 0 0 40px rgba(255,210,74,0.7); animation: cdPop 1s ease-out; }
+@keyframes cdPop { 0% { transform: scale(0.4); opacity: 0; } 30% { transform: scale(1.1); opacity: 1; } 100% { transform: scale(1); opacity: 0.85; } }
+
 /* red flash on bomb / miss */
 #overlay.flash-bad { animation: flashBad 0.4s ease-out; }
 @keyframes flashBad { 0% { background: rgba(255,0,0,0.0); } 25% { background: rgba(255,0,0,0.32); } 100% { background: rgba(255,0,0,0); } }
@@ -153,7 +212,7 @@ body {
 #hud-track.ok { color: var(--good); }
 
 /* ---------- start + gameover cards ---------- */
-#start-screen, #gameover {
+#start-screen, #gameover, #mode-screen, #versus-screen {
   position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 24px;
   background: radial-gradient(1200px 800px at 50% -10%, rgba(58,40,20,0.6) 0%, transparent 60%),
               rgba(10, 6, 2, 0.55);
@@ -161,7 +220,8 @@ body {
 }
 #start-screen.gone, #gameover[hidden] { display: none; }
 .start-card, .over-card {
-  max-width: 460px; text-align: center;
+  max-width: 460px; width: 100%; text-align: center;
+  max-height: 92vh; overflow-y: auto;
   background: rgba(20, 12, 4, 0.82);
   border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 20px;
   padding: 38px 32px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
