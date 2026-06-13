@@ -10,6 +10,7 @@ import { OneEuroFilter } from "./tracking/OneEuroFilter.js";
 import { addXP, getXP, levelFor, levelProgress, nextLevel } from "./game/belts.js";
 import { connect } from "./net/net.js";
 import { NetGame } from "./net/NetGame.js";
+import { SplitGame } from "./game/SplitGame.js";
 import * as sfx from "./audio/sfx.js";
 import * as music from "./audio/music.js";
 
@@ -18,7 +19,7 @@ const video = $("webcam");
 const overlay = $("overlay");
 const octx = overlay.getContext("2d");
 
-const tracker = new HandTracker({ numHands: 1 });
+const tracker = new HandTracker({ numHands: 2 }); // 2 enables split-screen; solo/versus use hand[0]
 let scene, effects, game;
 let running = false;
 let lastVideoTime = -1;
@@ -70,6 +71,14 @@ const _sp = smoothingParams(settings.smoothing);
 const cursorFX = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 const cursorFY = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 
+// split-screen (2 players, 2 hands) state — one object per side
+let splitGame = null;
+const SPLIT_GAIN = 1.35;
+const splitSide = {
+  left:  { fx: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), fy: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), prev: null, cur: null, miss: 0, trail: [] },
+  right: { fx: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), fy: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), prev: null, cur: null, miss: 0, trail: [] },
+};
+
 const HAND_CONNECTIONS = [
   [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
   [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17],
@@ -83,6 +92,7 @@ function resizeAll() {
   overlay.height = Math.round(window.innerHeight * dpr);
   octx.setTransform(dpr, 0, 0, dpr, 0, 0);
   scene?.resize();
+  splitGame?.resize();
 }
 window.addEventListener("resize", resizeAll);
 
@@ -102,6 +112,7 @@ $("start-btn").addEventListener("click", start);
 $("again-btn").addEventListener("click", () => {
   $("gameover").hidden = true;
   if (mode === "versus") { netGame.clear(); socket.emit("rematch"); }
+  else if (mode === "split") { splitGame.clear(); music.setIntensity(0.6); runCountdown(3, () => splitGame.start()); }
   else { resetHud(); game.reset(); game.start(); }
 });
 $("menu-btn").addEventListener("click", backToMenu);
@@ -261,11 +272,11 @@ function showModeScreen() {
   $("mode-screen").hidden = false;
 }
 function setHudMode(m) {
-  const versus = m === "versus";
-  $("score").hidden = versus;
-  $("strikes").hidden = versus;
+  const twoP = m === "versus" || m === "split";
+  $("score").hidden = twoP;
+  $("strikes").hidden = twoP;
   $("solo-timer").hidden = m !== "solo";
-  $("versus-hud").hidden = !versus;
+  $("versus-hud").hidden = !twoP;
 }
 function startSolo() {
   mode = "solo";
@@ -405,7 +416,105 @@ function backToMenu() {
   $("over-score-lbl").textContent = "Score"; $("over-best-lbl").textContent = "Best";
   $("game-hud").hidden = true;
   setHudMode("solo");
+  endSplitView();
   showModeScreen();
+}
+
+// ============================ split-screen (same-screen 2P) ============================
+const splitCallbacks = {
+  onTick: ({ timeLeftMs, scores }) => {
+    const sec = Math.ceil(timeLeftMs / 1000);
+    const t = $("vs-timer"); t.textContent = formatTime(sec); t.classList.toggle("low", sec <= 10);
+    $("vs-you-score").textContent = scores[0];
+    $("vs-opp-score").textContent = scores[1];
+  },
+  onOver: ({ scores, winner }) => showSplitResult(scores, winner),
+};
+
+function startSplit() {
+  mode = "split";
+  controller = null; // split is driven directly in tick()
+  $("mode-screen").hidden = true;
+  $("gameover").hidden = true;
+  $("game-hud").hidden = false;
+  setHudMode("split");
+  music.setIntensity(0.6);
+  if (!splitGame) splitGame = new SplitGame(scene.renderer, splitCallbacks);
+  // two camera PiPs (P1 bottom-left, P2 bottom-right)
+  $("webcam").classList.add("pip-left");
+  const w2 = $("webcam2"); w2.srcObject = video.srcObject; w2.hidden = false; w2.play?.();
+  // reset per-side state
+  for (const k of ["left", "right"]) {
+    const s = splitSide[k]; s.prev = s.cur = null; s.miss = 0; s.trail.length = 0; s.fx.reset(); s.fy.reset();
+  }
+  $("vs-you-name").textContent = "Player 1";
+  $("vs-opp-name").textContent = "Player 2";
+  $("vs-you-score").textContent = "0"; $("vs-opp-score").textContent = "0";
+  $("vs-timer").textContent = formatTime(splitGame.durationMs / 1000);
+  runCountdown(3, () => splitGame.start());
+}
+function endSplitView() {
+  $("webcam").classList.remove("pip-left");
+  $("webcam2").hidden = true;
+}
+function showSplitResult(scores, winner) {
+  addXP(Math.max(scores[0], scores[1]));
+  music.setIntensity(0.2);
+  $("over-title").textContent = winner === -1 ? "Tie game!" : `Player ${winner + 1} wins! 🏆`;
+  $("over-reason").textContent = `Final score — P1 ${scores[0]} · P2 ${scores[1]}`;
+  $("over-score").textContent = scores[0]; $("over-score-lbl").textContent = "Player 1";
+  $("over-best").textContent = scores[1]; $("over-best-lbl").textContent = "Player 2";
+  $("over-progress").hidden = true;
+  $("again-btn").textContent = "Rematch";
+  $("menu-btn").hidden = false;
+  $("gameover").hidden = false;
+}
+
+// raw fingertip (normalized) → local pixels of its half (0..W/2 × 0..H)
+function mapHalf(hand, side) {
+  const W = window.innerWidth, H = window.innerHeight, hw = W / 2;
+  const mx = 1 - hand.x; // mirrored full-frame x
+  let lf = side === "left" ? mx / 0.5 : (mx - 0.5) / 0.5;
+  lf = Math.min(1, Math.max(0, lf));
+  const gx = Math.min(1, Math.max(0, 0.5 + (lf - 0.5) * SPLIT_GAIN));
+  const gy = Math.min(1, Math.max(0, 0.5 + (hand.y - 0.5) * SPLIT_GAIN));
+  return { x: gx * hw, y: gy * H };
+}
+
+// Update one side's smoothed blade; returns its slice segment (local coords) or null.
+function updateSplitSide(s, side, hand, now, dtMs, freq) {
+  const off = side === "right" ? Math.floor(window.innerWidth / 2) : 0;
+  let seg = null;
+  if (hand) {
+    const raw = mapHalf(hand, side);
+    if (s.miss >= 2) { s.fx.reset(); s.fy.reset(); s.prev = null; }
+    s.miss = 0;
+    const cur = { x: s.fx.filter(raw.x, freq), y: s.fy.filter(raw.y, freq) };
+    if (s.prev) seg = { a: s.prev, b: cur, speed: bladeSpeed(s.prev, cur, dtMs) };
+    s.trail.push({ x: cur.x + off, y: cur.y, t: now }); // full-screen for drawing
+    s.prev = cur; s.cur = cur;
+  } else {
+    s.miss++;
+    if (s.miss <= COAST_FRAMES && s.cur) s.trail.push({ x: s.cur.x + off, y: s.cur.y, t: now });
+    else { s.fx.reset(); s.fy.reset(); s.prev = null; s.cur = null; }
+  }
+  while (s.trail.length && now - s.trail[0].t > TRAIL_MS) s.trail.shift();
+  return seg;
+}
+
+// Assign the two detected hands to sides by mirrored x; update both; return segments.
+function handleSplitHands(result, now, dtMs, freq) {
+  const hands = result.present ? result.hands : [];
+  let leftHand = null, rightHand = null;
+  for (const h of hands) {
+    const mx = 1 - h.x;
+    if (mx < 0.5) { if (!leftHand) leftHand = h; }
+    else if (!rightHand) rightHand = h;
+  }
+  return {
+    l: updateSplitSide(splitSide.left, "left", leftHand, now, dtMs, freq),
+    r: updateSplitSide(splitSide.right, "right", rightHand, now, dtMs, freq),
+  };
 }
 
 // ---------- loop ----------
@@ -421,7 +530,7 @@ function tick(now) {
   const dt = lastTickTs ? Math.min((now - lastTickTs) / 1000, 0.05) : 0.016;
   lastTickTs = now;
 
-  let segment = null;
+  let segment = null, splitSegLeft = null, splitSegRight = null;
   if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     const dtMs = lastDetectTs ? now - lastDetectTs : 33;
@@ -432,7 +541,10 @@ function tick(now) {
     if (DEBUG) updateHud(result, now);
     lastResult = result;
 
-    if (result.present && result.blade) {
+    if (mode === "split") {
+      const segs = handleSplitHands(result, now, dtMs, freq);
+      splitSegLeft = segs.l; splitSegRight = segs.r;
+    } else if (result.present && result.blade) {
       const raw = mapPoint(result.blade.x, result.blade.y);
       // Reacquire after a multi-frame gap: snap the filter to the new point and
       // don't form a slice segment this frame (avoids a ghost slice across the gap).
@@ -474,8 +586,12 @@ function tick(now) {
     }
   }
 
-  if (controller) controller.update(dt, segment);
-  if (scene) scene.render();
+  if (mode === "split") {
+    if (splitGame) { splitGame.update(dt, splitSegLeft, splitSegRight); splitGame.render(); }
+  } else {
+    if (controller) controller.update(dt, segment);
+    if (scene) scene.render();
+  }
   drawOverlay(now);
 }
 
@@ -542,19 +658,43 @@ function wireSettings() {
 wireSettings();
 renderLevel();
 
-// Same-screen 2P is the next build — entry point is shown but explains it's coming.
-$("mode-split").addEventListener("click", () => {
-  const note = $("mode-rank");
-  note.innerHTML = "👥 Same-screen 2P is landing in the next update — for now try Versus 1v1!";
-});
+$("mode-split").addEventListener("click", startSplit);
 
 // ---------- 2D overlay: blade trail + debug skeleton ----------
 function drawOverlay(now) {
   octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  if (mode === "split") { drawSplitOverlay(now); return; }
   if (showSkeleton && lastResult.present) drawSkeleton(lastResult.landmarks);
   if (mode === "versus") drawOppTrail(now);
   drawTrail(now);
   drawTip();
+}
+
+// two blade trails (P1 yellow / P2 blue) + a center divider
+function drawSplitOverlay(now) {
+  const W = window.innerWidth, H = window.innerHeight;
+  ribbonTrail(splitSide.left.trail, now, "rgba(255,250,230,", "rgba(255,210,74,0.95)");
+  ribbonTrail(splitSide.right.trail, now, "rgba(170,220,255,", "rgba(120,200,255,0.95)");
+  octx.save();
+  octx.strokeStyle = "rgba(255,255,255,0.28)"; octx.lineWidth = 2;
+  octx.setLineDash([10, 10]);
+  octx.beginPath(); octx.moveTo(W / 2, 0); octx.lineTo(W / 2, H); octx.stroke();
+  octx.restore();
+}
+function ribbonTrail(tr, now, body, tipColor) {
+  if (tr.length >= 2) {
+    octx.save(); octx.lineCap = "round"; octx.lineJoin = "round"; octx.shadowColor = tipColor;
+    for (let i = 1; i < tr.length; i++) {
+      const a = tr[i - 1], b = tr[i], k = Math.max(0, 1 - (now - b.t) / TRAIL_MS);
+      octx.shadowBlur = 16 * k; octx.lineWidth = 3 + 18 * k;
+      octx.strokeStyle = `${body}${0.18 + 0.78 * k})`;
+      octx.beginPath(); octx.moveTo(a.x, a.y); octx.lineTo(b.x, b.y); octx.stroke();
+    }
+    octx.restore();
+  }
+  const p = tr[tr.length - 1];
+  if (p) { octx.save(); octx.shadowColor = tipColor; octx.shadowBlur = 22; octx.fillStyle = "#fff";
+    octx.beginPath(); octx.arc(p.x, p.y, 10, 0, Math.PI * 2); octx.fill(); octx.restore(); }
 }
 
 // opponent's ghost blade (blue) in versus
@@ -630,7 +770,21 @@ if (new URLSearchParams(location.search).has("test")) {
     get mode() { return mode; },
     get socket() { return socket; },
     get netGame() { return netGame; },
+    get splitGame() { return splitGame; },
     get you() { return you; },
+    splitSpawn(side, type) {
+      const half = splitGame[side];
+      const r = Math.min(half.scene.w, half.scene.h) * 0.06;
+      const f = new Fruit(type, { x: half.scene.w / 2, y: half.scene.h / 2, vx: 0, vy: 0, radius: r });
+      half.scene.add(f.mesh); half.fruits.push(f);
+      return { x: f.x, y: f.y };
+    },
+    splitSwipe(side, x0, y0, x1, y1) {
+      splitGame[side].update(0.016, { a: { x: x0, y: y0 }, b: { x: x1, y: y1 }, speed: 6000 }, performance.now(), false);
+    },
+    splitState() {
+      return { playing: splitGame.playing, left: splitGame.left.score, right: splitGame.right.score, hw: splitGame.left.scene.w };
+    },
     netSliceFirst() {
       const id = netGame?.fruits.keys().next().value;
       if (id != null && socket) { socket.emit("slice", { fruitId: id }); return id; }

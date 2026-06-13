@@ -39,17 +39,18 @@ export class HandTracker {
     return this.delegate;
   }
 
-  /** @returns {{present:boolean, blade:{x,y}|null, landmarks:Array, handedness:string|null}} */
+  /** @returns {{present, blade:{x,y}|null, hands:[{x,y}], landmarks, handedness}} */
   detect(video, tsMs) {
-    if (!this.landmarker) return { present: false, blade: null, landmarks: [], handedness: null };
+    if (!this.landmarker) return { present: false, blade: null, hands: [], landmarks: [], handedness: null };
     const results = this.landmarker.detectForVideo(video, tsMs);
-    const hand = results.landmarks?.[0];
-    if (!hand) return { present: false, blade: null, landmarks: [], handedness: null };
-    const tip = hand[BLADE_LANDMARK];
+    const all = results.landmarks || [];
+    if (!all.length) return { present: false, blade: null, hands: [], landmarks: [], handedness: null };
+    const hands = all.map((h) => ({ x: h[BLADE_LANDMARK].x, y: h[BLADE_LANDMARK].y }));
     return {
       present: true,
-      blade: { x: tip.x, y: tip.y },
-      landmarks: hand,
+      blade: hands[0],          // first hand drives solo/versus
+      hands,                    // all fingertips (split-screen uses both)
+      landmarks: all[0],
       handedness: results.handedness?.[0]?.[0]?.categoryName ?? null,
     };
   }

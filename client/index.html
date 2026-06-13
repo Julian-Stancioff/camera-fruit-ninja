@@ -11,6 +11,7 @@
 <body>
   <div id="dojo" class="bg-dojo"></div>
   <video id="webcam" playsinline muted></video>
+  <video id="webcam2" playsinline muted hidden></video>
   <canvas id="game-canvas"></canvas>
   <canvas id="overlay"></canvas>
 
@@ -53,7 +54,7 @@
     <div id="solo-timer" hidden>0:00</div>
     <!-- versus / split top bar -->
     <div id="versus-hud" hidden>
-      <div class="vs-side you"><span class="vs-label">You</span><span id="vs-you-score">0</span></div>
+      <div class="vs-side you"><span class="vs-label" id="vs-you-name">You</span><span id="vs-you-score">0</span></div>
       <div class="vs-timer" id="vs-timer">90</div>
       <div class="vs-side opp"><span class="vs-label" id="vs-opp-name">Opponent</span><span id="vs-opp-score">0</span></div>
     </div>
