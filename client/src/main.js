@@ -34,6 +34,7 @@ let socket = null, netGame = null, you = 0, oppName = "Opponent";
 let lastBladeEmit = 0;
 let soloStartTs = 0, lastMusicTs = 0;
 let readyGate = null, readyResult = null; // hand-confirmation gate before a match
+let paused = false, pauseStart = 0;       // pause / quit-to-menu
 const oppTrail = [];
 
 // Tunable feel — overridable via URL (?gain=2.2&mincut=1.0&beta=0.02&debug) so we
@@ -148,7 +149,7 @@ $("start-btn").addEventListener("click", start);
 $("again-btn").addEventListener("click", () => {
   $("gameover").hidden = true;
   if (mode === "versus") { netGame.clear(); socket.emit("rematch"); } // music restarts on server 'start'
-  else if (mode === "split") { splitGame.clear(); musicGame(); runCountdown(3, () => splitGame.start()); }
+  else if (mode === "split") { splitGame.clear(); musicGame(); runCountdown(3, () => { splitGame.start(); setPauseBtn(true); }); }
   else { resetHud(); musicGame(); game.reset(); game.start(); }
 });
 $("menu-btn").addEventListener("click", backToMenu);
@@ -203,7 +204,7 @@ function setNote(t, isError = false) {
 
 // ---------- game callbacks → UI ----------
 const callbacks = {
-  onStart() { soloStartTs = performance.now(); },
+  onStart() { soloStartTs = performance.now(); setPauseBtn(true); },
   onSlice({ comboSize, gained, score }) {
     setScore(score);
     sfx.slice();
@@ -218,6 +219,7 @@ const callbacks = {
   onGameOver({ reason, score, best }) {
     music.stop();    // music stops on game over…
     sfx.gameover();  // …and the descending "nuh-nuh-nuh" sting plays
+    setPauseBtn(false);
     showSoloGameOver(reason, score, best);
   },
 };
@@ -407,7 +409,7 @@ function onMatchStart(s) {
   setHudMode("versus");
   musicGame();
   resetVersusHud(s.durationMs);
-  runCountdown(Math.max(1, Math.round((s.countdownMs || 3000) / 1000)), () => netGame.begin(s.gravity));
+  runCountdown(Math.max(1, Math.round((s.countdownMs || 3000) / 1000)), () => { netGame.begin(s.gravity); setPauseBtn(true); });
 }
 function resetVersusHud(durationMs) {
   $("vs-you-score").textContent = "0";
@@ -434,6 +436,9 @@ const netCallbacks = {
     updateVersusScores(scores);
   },
   onScores: (scores) => updateVersusScores(scores),
+  onCombo: (n, gained) => { showCombo(n, gained); sfx.combo(n); },
+  onBomb: () => flashBad(),
+  onMissed: () => { flashBad(); sfx.miss(); },
   onOver: ({ scores, winner }) => { addXP(scores[you] || 0); showVersusResult(scores, winner, false); },
   onOppBlade: (b) => pushOppBlade(b),
   onOppLeft: () => showVersusResult(netGame ? netGame.scores : [0, 0], null, true),
@@ -451,6 +456,7 @@ function showVersusResult(scores, winner, oppLeft) {
   else if (winner === -1) { title = "Tie game!"; reason = "Dead even — rematch?"; }
   else if (winner === you) { title = "You win! 🏆"; reason = "Nice slicing."; sfx.combo(5); }
   else { title = "You lose"; reason = "Get 'em next round."; sfx.gameover(); }
+  setPauseBtn(false);
   $("over-title").textContent = title;
   $("over-reason").textContent = reason;
   $("over-score").textContent = youS; $("over-score-lbl").textContent = "You";
@@ -472,10 +478,54 @@ function backToMenu() {
   $("menu-btn").hidden = true;
   $("over-score-lbl").textContent = "Score"; $("over-best-lbl").textContent = "Best";
   $("game-hud").hidden = true;
+  setPauseBtn(false);
   setHudMode("solo");
   endSplitView();
   showModeScreen();
 }
+
+// ============================ pause / quit-to-menu ============================
+// Solo & split truly freeze (timer + sim + music). Versus can't pause a live
+// networked match, so its overlay only offers leave-or-keep-playing.
+function setPauseBtn(v) { $("pause-btn").hidden = !v; }
+function inActiveGame() {
+  return (mode === "solo" && game?.playing) ||
+         (mode === "split" && splitGame?.playing) ||
+         (mode === "versus" && netGame?.playing);
+}
+function pauseGame() {
+  if (paused || readyGate || !inActiveGame()) return;
+  paused = true; pauseStart = performance.now();
+  const versus = mode === "versus";
+  $("pause-versus-note").hidden = !versus;
+  $("pause-resume").textContent = versus ? "Keep playing" : "Resume";
+  $("pause-title").textContent = versus ? "Menu" : "Paused";
+  if (!versus) music.stop();         // freeze the soundtrack while truly paused
+  $("pause-screen").hidden = false;
+}
+function resumeGame() {
+  if (!paused) return;
+  const delta = performance.now() - pauseStart;
+  if (mode === "solo") soloStartTs += delta;            // don't let the timer jump
+  if (mode === "split" && splitGame) splitGame.endAt += delta;
+  paused = false;
+  $("pause-screen").hidden = true;
+  if (mode !== "versus") musicGame();
+}
+function quitToMenu() {
+  paused = false;
+  $("pause-screen").hidden = true;
+  if (mode === "solo" && game) game.playing = false;
+  if (mode === "split" && splitGame) splitGame.playing = false;
+  backToMenu();                       // tears down the socket in versus
+}
+$("pause-btn").addEventListener("click", pauseGame);
+$("pause-resume").addEventListener("click", resumeGame);
+$("pause-quit").addEventListener("click", quitToMenu);
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || e.target.tagName === "INPUT") return;
+  if (paused) resumeGame(); else pauseGame();
+});
 
 // ============================ split-screen (same-screen 2P) ============================
 const splitCallbacks = {
@@ -513,7 +563,7 @@ function startSplit() {
       // two camera PiPs (P1 bottom-left, P2 bottom-right)
       $("webcam").classList.add("pip-left");
       const w2 = $("webcam2"); w2.srcObject = video.srcObject; w2.hidden = false; w2.play?.();
-      runCountdown(3, () => splitGame.start());
+      runCountdown(3, () => { splitGame.start(); setPauseBtn(true); });
     },
   });
 }
@@ -523,6 +573,7 @@ function endSplitView() {
 }
 function showSplitResult(scores, winner) {
   addXP(Math.max(scores[0], scores[1]));
+  setPauseBtn(false);
   musicGameOver();
   $("over-title").textContent = winner === -1 ? "Tie game!" : `Player ${winner + 1} wins! 🏆`;
   $("over-reason").textContent = `Final score — P1 ${scores[0]} · P2 ${scores[1]}`;
@@ -677,6 +728,14 @@ function tick(now) {
   lastTickTs = now;
 
   if (readyGate) { readyTick(now); return; } // hand-confirmation gate owns the frame
+
+  // Paused (solo & split only) — hold the frame: keep painting but advance nothing.
+  // Versus can't freeze a live networked match, so it keeps running under its overlay.
+  if (paused && mode !== "versus") {
+    if (mode === "split") splitGame?.render(); else if (scene) scene.render();
+    drawOverlay(now);
+    return;
+  }
 
   let segment = null, splitSegLeft = null, splitSegRight = null;
   if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {

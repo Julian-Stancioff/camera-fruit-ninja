@@ -64,6 +64,7 @@
       <div class="vs-side opp"><span class="vs-label" id="vs-opp-name">Opponent</span><span id="vs-opp-score">0</span></div>
     </div>
     <div id="combo"></div>
+    <button id="pause-btn" title="Pause (Esc)" aria-label="Pause" hidden>⏸</button>
   </div>
 
   <!-- Debug HUD -->
@@ -182,6 +183,16 @@
 
       <button id="again-btn">Play again</button>
       <button id="menu-btn" class="set-reset" hidden style="margin-top:12px">← Back to menu</button>
+    </div>
+  </div>
+
+  <!-- ===================== PAUSE / QUIT ===================== -->
+  <div id="pause-screen" hidden>
+    <div class="over-card">
+      <h2 id="pause-title">Paused</h2>
+      <p id="pause-versus-note" class="start-note" hidden>Heads up — online matches keep running. Leaving forfeits the round.</p>
+      <button id="pause-resume">Resume</button>
+      <button id="pause-quit" class="set-reset" style="margin-top:12px">← Quit to menu</button>
     </div>
   </div>
 

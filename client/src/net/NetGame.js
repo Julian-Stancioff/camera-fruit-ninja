@@ -5,6 +5,7 @@
 // moves when the server says so.
 import { Fruit } from "../game/Fruit.js";
 import { segmentHitsCircle } from "../game/slice.js";
+import * as sfx from "../audio/sfx.js";
 
 const SPEED_GATE = 180;
 const HIT_MARGIN = 1.3;
@@ -18,12 +19,13 @@ export class NetGame {
     this.cb = cb;
     this.fruits = new Map(); // netId -> Fruit
     this.localSliced = new Set();
-    this.gravityNorm = 1.5;
+    this.gravityNorm = 1.8;
     this.scores = [0, 0];
     this.playing = false;
 
     socket.on("spawn", ({ fruits }) => this._spawn(fruits));
     socket.on("sliced", (d) => this._onSliced(d));
+    socket.on("missed", (d) => this._onMissed(d));
     socket.on("tick", (d) => { this.scores = d.scores; cb.onTick?.(d); });
     socket.on("over", (o) => { this.playing = false; cb.onOver?.(o); });
     socket.on("oppBlade", (b) => cb.onOppBlade?.(b));
@@ -57,7 +59,8 @@ export class NetGame {
         // Predict the cut locally for instant feel; score arrives from the server.
         this.localSliced.add(id);
         const dx = segment.b.x - segment.a.x, dy = segment.b.y - segment.a.y, len = Math.hypot(dx, dy) || 1;
-        if (f.isBomb) this.effects.explode(f); else this.effects.sliceBurst(f, { x: dx / len, y: dy / len });
+        if (f.isBomb) { this.effects.explode(f); sfx.bomb(); }
+        else { this.effects.sliceBurst(f, { x: dx / len, y: dy / len }); sfx.slice(); }
         this.scene.remove(f.mesh);
         this.fruits.delete(id);
         this.socket.emit("slice", { fruitId: id });
@@ -68,15 +71,29 @@ export class NetGame {
     this.effects.update(dt, gravity, H);
   }
 
-  _onSliced({ fruitId, by, type, scores }) {
+  _onSliced({ fruitId, by, type, combo, gained, scores }) {
     this.scores = scores;
     this.cb.onScores?.(scores);
+    if (by === this.you) {
+      // server-confirmed: show our combo / bomb feedback
+      if (type === "bomb") this.cb.onBomb?.();
+      else if (combo >= 2) this.cb.onCombo?.(combo, gained);
+    }
     const f = this.fruits.get(fruitId); // opponent claimed one we still had
     if (f) {
       if (f.isBomb) this.effects.explode(f); else this.effects.sliceBurst(f);
       this.scene.remove(f.mesh);
       this.fruits.delete(fruitId);
     }
+  }
+
+  // A non-bomb fruit fell unsliced — server penalized both players.
+  _onMissed({ fruitId, penalty, scores }) {
+    this.scores = scores;
+    this.cb.onScores?.(scores);
+    const f = this.fruits.get(fruitId);
+    if (f) { this.scene.remove(f.mesh); this.fruits.delete(fruitId); }
+    this.cb.onMissed?.(penalty);
   }
 
   clear() {

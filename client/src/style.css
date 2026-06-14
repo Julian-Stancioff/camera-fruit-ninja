@@ -128,6 +128,15 @@ body {
   transition: transform 0.15s, background 0.15s;
 }
 #settings-btn:hover { background: rgba(0, 0, 0, 0.7); transform: rotate(40deg); }
+/* Pause button — bottom-left, above the canvas; clickable inside the no-pointer HUD */
+#pause-btn {
+  position: fixed; left: 18px; bottom: 18px; z-index: 9;
+  width: 44px; height: 44px; border-radius: 50%; pointer-events: auto;
+  background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff; font-size: 1.1rem; cursor: pointer; backdrop-filter: blur(4px);
+  transition: transform 0.12s, background 0.12s;
+}
+#pause-btn:hover { background: rgba(0, 0, 0, 0.72); transform: scale(1.08); }
 #settings-panel {
   position: fixed; left: 18px; top: 136px; z-index: 12;
   width: 268px; padding: 16px 18px; border-radius: 14px;
@@ -470,7 +479,7 @@ body {
 #hud-track.ok { color: var(--good); }
 
 /* ---------- start + gameover cards ---------- */
-#start-screen, #gameover, #mode-screen, #versus-screen {
+#start-screen, #gameover, #mode-screen, #versus-screen, #pause-screen {
   position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 24px;
   background: radial-gradient(1200px 800px at 50% -10%, rgba(58,40,20,0.6) 0%, transparent 60%),
               rgba(10, 6, 2, 0.55);
@@ -493,15 +502,15 @@ body {
 .over-scores { display: flex; justify-content: center; gap: 40px; margin: 8px 0 26px; }
 .over-num { display: block; font-size: 2.6rem; font-weight: 800; color: #fff; }
 .over-lbl { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: #cdbfa6; }
-button#start-btn, button#again-btn {
+button#start-btn, button#again-btn, button#pause-resume {
   font: inherit; font-size: 1.2rem; font-weight: 700; color: #2a1c0d;
   background: linear-gradient(180deg, #ffe27a, var(--accent));
   border: none; border-radius: 999px; padding: 15px 40px; cursor: pointer;
   box-shadow: 0 6px 0 #b9881f, 0 10px 24px rgba(0, 0, 0, 0.4);
   transition: transform 0.08s, box-shadow 0.08s;
 }
-button#start-btn:hover, button#again-btn:hover { transform: translateY(-1px); }
-button#start-btn:active, button#again-btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #b9881f; }
+button#start-btn:hover, button#again-btn:hover, button#pause-resume:hover { transform: translateY(-1px); }
+button#start-btn:active, button#again-btn:active, button#pause-resume:active { transform: translateY(4px); box-shadow: 0 2px 0 #b9881f; }
 button#start-btn:disabled { opacity: 0.7; cursor: default; }
 .start-note { margin: 20px 0 0; font-size: 0.82rem; color: #cdbfa6; line-height: 1.45; }
 .start-note.error { color: var(--bad); font-weight: 600; }

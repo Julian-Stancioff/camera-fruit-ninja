@@ -53,7 +53,23 @@ the Socket.io WebSocket with zero per-app config; **Dokploy** builds/deploys the
 Docker images from git. Self-hosting the MediaPipe model/wasm avoids a third-party CDN
 dependency at runtime.
 
-### 9. Assets: procedural first, AI-art later
+### 9. Versus balance: skill over spam
+Early play-testing showed the 1v1 devolved into "just sweep side-to-side" once fruit got
+dense. Fixes, all server-side (authoritative): **fewer fruit on screen** (mostly singles,
+no end-game flood) but occasional **2–3 fruit clusters** that one aimed swipe can combo;
+**combos award escalating points** (server tracks the chain per player); **cross-court
+launches** from the edges so horizontal sweeping misses; **a touch faster** fall; and
+**penalties that grow over the match** — a sliced bomb costs 3→18 points and a *dropped*
+fruit costs 1→5 the later it happens, so blind swiping actively loses. A combo cluster
+never contains a bomb (combos stay rewarding, not punishing).
+
+### 10. Pause / quit-to-menu
+Solo and 2-player **truly pause** (the loop, the timer, and the music all freeze; the timer
+is offset on resume so it never jumps). Versus **can't** freeze a live networked match, so
+its overlay only offers "keep playing" or "quit" (which leaves the match). Reachable by the
+on-screen button or the **Esc** key.
+
+### 11. Assets: procedural first, AI-art later
 Fruit are **procedural Three.js meshes** (textured spheres/cones + accents); SFX are
 **synthesized with the Web Audio API**. Zero asset files, no licensing issues, fully
 tunable. AI image tools (Higgsfield) are reserved for later visual polish if needed.
