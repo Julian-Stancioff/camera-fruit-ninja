@@ -63,6 +63,7 @@ let GAIN_X = settings.sensitivity, GAIN_Y = settings.sensitivity;
 
 // blade state (screen px)
 let bladePrev = null, bladeCur = null;
+let lastRawBlade = null;        // last chosen fingertip (normalized) — keeps the blade locked to ONE hand
 let lastHandTs = 0, lastDetectTs = 0;
 let misses = 0;                 // consecutive frames MediaPipe found no hand
 const COAST_FRAMES = 8;         // ~250ms: hold the blade through brief dropouts
@@ -106,6 +107,21 @@ function mapPoint(nx, ny) {
   const gx = Math.min(1, Math.max(0, 0.5 + (nx - 0.5) * GAIN_X));
   const gy = Math.min(1, Math.max(0, 0.5 + (ny - 0.5) * GAIN_Y));
   return { x: (1 - gx) * cw, y: gy * ch };
+}
+
+// Tracker runs with numHands:2 (for split-screen). In single-blade modes, pick the
+// hand NEAREST the last fingertip so the blade can't flip between hands frame-to-frame
+// (that flip was the "jumps up/down and corrects itself" glitch).
+function pickBlade(result) {
+  const hands = result.hands || [];
+  if (hands.length === 0) return null;
+  if (hands.length === 1 || !lastRawBlade) return hands[0];
+  let best = hands[0], bd = Infinity;
+  for (const h of hands) {
+    const d = (h.x - lastRawBlade.x) ** 2 + (h.y - lastRawBlade.y) ** 2;
+    if (d < bd) { bd = d; best = h; }
+  }
+  return best;
 }
 
 // ---------- music helpers (separate menu / in-game volumes) ----------
@@ -571,6 +587,9 @@ function handleSplitHands(result, now, dtMs, freq) {
 // requires one hand on each side; otherwise any one hand.
 function enterReady({ needHands, label, sub, onConfirmed }) {
   readyGate = { needHands, onConfirmed, okSince: 0, done: false };
+  readyResult = null;                 // clear stale detection from a previous gate
+  const p = video.play && video.play(); // ensure the stream is advancing
+  if (p && p.catch) p.catch(() => {});
   $("webcam").classList.remove("pip-left");
   $("webcam").classList.add("cam-ready");
   $("webcam").classList.remove("cam-off");
@@ -582,16 +601,16 @@ function enterReady({ needHands, label, sub, onConfirmed }) {
 }
 function exitReady() {
   readyGate = null;
+  lastVideoTime = -1; lastDetectTs = 0; // force the game loop to re-detect cleanly
   $("webcam").classList.remove("cam-ready");
   overlay.classList.remove("overlay-top");
   $("ready-screen").hidden = true;
 }
 
 function readyTick(now) {
-  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
-    lastVideoTime = video.currentTime;
-    readyResult = tracker.detect(video, now);
-  }
+  // Detect every frame here (self-contained, no shared guard) so the gate always
+  // re-acquires the hand — even on the 2nd, 3rd… game.
+  if (video.readyState >= 2) readyResult = tracker.detect(video, now);
   const hands = readyResult?.present ? readyResult.hands : [];
   let okNow;
   if (readyGate.needHands === 2) {
@@ -673,32 +692,34 @@ function tick(now) {
     if (mode === "split") {
       const segs = handleSplitHands(result, now, dtMs, freq);
       splitSegLeft = segs.l; splitSegRight = segs.r;
-    } else if (result.present && result.blade) {
-      const raw = mapPoint(result.blade.x, result.blade.y);
-      // Reacquire after a multi-frame gap: snap the filter to the new point and
-      // don't form a slice segment this frame (avoids a ghost slice across the gap).
-      if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; }
-      misses = 0;
-      // Smooth in pixel space: clean cursor → clean slice segments → reliable cuts.
-      const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
-      if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
-      trail.push({ x: cur.x, y: cur.y, t: now });
-      bladePrev = cur; bladeCur = cur; lastHandTs = now;
-      // Versus: stream our fingertip to the opponent (~20Hz), normalized.
-      if (mode === "versus" && netGame?.playing && socket && now - lastBladeEmit > 50) {
-        socket.emit("blade", { nx: cur.x / window.innerWidth, ny: cur.y / window.innerHeight });
-        lastBladeEmit = now;
-      }
     } else {
-      // v2: coast through brief MediaPipe dropouts instead of dropping the blade
-      // (the #1 cause of "it works then it won't"). Hold the last position for a
-      // few frames so momentary losses are invisible; only truly drop after that.
-      misses++;
-      if (misses <= COAST_FRAMES && bladeCur) {
-        trail.push({ x: bladeCur.x, y: bladeCur.y, t: now }); // keep the blade alive
+      const blade = result.present ? pickBlade(result) : null;
+      if (blade) {
+        lastRawBlade = blade;
+        const raw = mapPoint(blade.x, blade.y);
+        // Reacquire after a multi-frame gap: snap the filter to the new point and
+        // don't form a slice segment this frame (avoids a ghost slice across the gap).
+        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; }
+        misses = 0;
+        // Smooth in pixel space: clean cursor → clean slice segments → reliable cuts.
+        const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
+        if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
+        trail.push({ x: cur.x, y: cur.y, t: now });
+        bladePrev = cur; bladeCur = cur; lastHandTs = now;
+        // Versus: stream our fingertip to the opponent (~20Hz), normalized.
+        if (mode === "versus" && netGame?.playing && socket && now - lastBladeEmit > 50) {
+          socket.emit("blade", { nx: cur.x / window.innerWidth, ny: cur.y / window.innerHeight });
+          lastBladeEmit = now;
+        }
       } else {
-        cursorFX.reset(); cursorFY.reset();
-        bladePrev = null; bladeCur = null;
+        // coast through brief MediaPipe dropouts instead of dropping the blade.
+        misses++;
+        if (misses <= COAST_FRAMES && bladeCur) {
+          trail.push({ x: bladeCur.x, y: bladeCur.y, t: now });
+        } else {
+          cursorFX.reset(); cursorFY.reset();
+          bladePrev = null; bladeCur = null;
+        }
       }
     }
     updateHandHint(now);
