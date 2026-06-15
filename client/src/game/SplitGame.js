@@ -36,21 +36,28 @@ class Half {
     this._recent = [];
     this.spawnTimer = 0;
     this.nextIn = 1.2;
+    this.bombSpawned = false;
   }
 
   _interval(t) { return rand(0.9, 1.1) * (1.25 - 0.45 * t); } // 1.25s → 0.8s
 
-  _wave(t, w, h, gravity) {
+  _wave(t, sec, w, h, gravity) {
     const baseR = Math.min(w, h) * 0.064;
     // Mostly single fruit; sometimes a tight 2–3 cluster (a combo opportunity).
     const cluster = t > 0.03 && Math.random() < 0.25 + 0.15 * t;
     const count = cluster ? (Math.random() < 0.35 ? 3 : 2) : 1;
     const clusterCx = rand(0.3, 0.7);
+    // Bombs arrive early (by time): eligible from ~4s, guaranteed by ~9s if none yet.
+    const bombEligible = sec > 4;
+    const bombChance = Math.min(0.3, 0.22 + sec / 200);
+    const forceBomb = bombEligible && !this.bombSpawned && sec > 6.5;
     const specs = [];
     let bombs = 0;
     for (let i = 0; i < count; i++) {
       let type = pick(FRUIT_TYPES);
-      if (!cluster && t > 0.03 && bombs === 0 && Math.random() < 0.05 + 0.08 * t) { type = "bomb"; bombs++; }
+      if (!cluster && bombEligible && bombs === 0 && ((forceBomb && i === 0) || Math.random() < bombChance)) {
+        type = "bomb"; bombs++; this.bombSpawned = true;
+      }
       const radius = type === "watermelon" ? baseR * 1.35 : type === "bomb" ? baseR : baseR * rand(0.82, 1.05);
       let x, vx;
       if (cluster) {
@@ -85,7 +92,7 @@ class Half {
       this.spawnTimer += realDt;
       if (this.spawnTimer >= this.nextIn) {
         this.spawnTimer = 0; this.nextIn = this._interval(t);
-        for (const spec of this._wave(t, w, h, gravity)) {
+        for (const spec of this._wave(t, elapsedSec, w, h, gravity)) {
           const f = new Fruit(spec.type, spec);
           this.scene.add(f.mesh); this.fruits.push(f);
         }

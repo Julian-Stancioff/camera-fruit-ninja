@@ -9,6 +9,8 @@ export class FruitSpawner {
   constructor() {
     this.timer = 0;
     this.nextIn = 1.3; // gentle start — give the player a moment to orient
+    this.elapsed = 0;       // seconds since the spawner started (drives bomb timing)
+    this.bombSpawned = false;
   }
 
   // Interval shrinks as score climbs: slow start (~1.7s) → busy (~0.55s) by score ~70.
@@ -19,6 +21,7 @@ export class FruitSpawner {
 
   /** Advance time; return an array of spawn specs (possibly empty). */
   update(dt, score, w, h, gravity) {
+    this.elapsed += dt;
     this.timer += dt;
     if (this.timer < this.nextIn) return [];
     this.timer = 0;
@@ -33,14 +36,20 @@ export class FruitSpawner {
     let count = 1;
     for (let k = 1; k < maxCount; k++) if (Math.random() < 0.4 + 0.3 * t) count++;
 
-    const bombChance = Math.min(0.16, 0.03 + score / 700);
+    // Bombs arrive early — by TIME, not score: eligible from ~4s, likely within the
+    // first 5–10s, and guaranteed by ~9s if the dice haven't produced one yet.
+    const bombEligible = this.elapsed > 4;
+    const bombChance = Math.min(0.3, 0.22 + this.elapsed / 200);
+    const forceBomb = bombEligible && !this.bombSpawned && this.elapsed > 6.5;
     const baseR = Math.min(w, h) * 0.064;
     const specs = [];
     let bombs = 0;
     for (let i = 0; i < count; i++) {
       let type = pick(FRUIT_TYPES);
-      // Allow at most one bomb per wave, never in the early game.
-      if (score > 6 && bombs === 0 && Math.random() < bombChance) { type = "bomb"; bombs++; }
+      // At most one bomb per wave.
+      if (bombEligible && bombs === 0 && ((forceBomb && i === 0) || Math.random() < bombChance)) {
+        type = "bomb"; bombs++; this.bombSpawned = true;
+      }
       const radius = type === "watermelon" ? baseR * 1.35
         : type === "bomb" ? baseR * 1.0 : baseR * rand(0.82, 1.05);
 

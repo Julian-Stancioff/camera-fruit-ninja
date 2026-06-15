@@ -60,12 +60,19 @@ function spawnWave(room) {
   const count = cluster ? (Math.random() < 0.35 ? 3 : 2) : 1;
   const clusterCx = rand(0.3, 0.7);
 
+  // Bombs arrive early (by time): eligible from ~4s, likely within 5–10s, and
+  // guaranteed by ~9s if the dice haven't produced one. Never inside a cluster.
+  const bombEligible = elapsed > 4;
+  const bombChance = Math.min(0.3, 0.22 + elapsed / 200);
+  const forceBomb = bombEligible && !room.bombSpawned && elapsed > 6.5;
+
   const fruits = [];
   let bombs = 0;
   for (let i = 0; i < count; i++) {
     let type = pick(FRUITS);
-    // Bombs only on single-fruit waves — never hidden inside a combo cluster.
-    if (!cluster && elapsed > 6 && bombs === 0 && Math.random() < 0.12 + 0.06 * t) { type = "bomb"; bombs++; }
+    if (!cluster && bombEligible && bombs === 0 && ((forceBomb && i === 0) || Math.random() < bombChance)) {
+      type = "bomb"; bombs++; room.bombSpawned = true;
+    }
 
     let nx, vx, rise;
     if (cluster) {
@@ -133,6 +140,7 @@ function startMatch(room) {
     room.status = "playing";
     room.startAt = Date.now();
     room.endAt = room.startAt + DURATION_MS;
+    room.bombSpawned = false;
     scheduleSpawn(room);
     room.sweepTimer = setInterval(() => sweepMissed(room), 250);
     room.tickTimer = setInterval(() => {
