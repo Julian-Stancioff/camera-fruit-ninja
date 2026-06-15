@@ -166,6 +166,18 @@ body {
 }
 #hand-hint.show { opacity: 1; animation: handPulse 1.6s ease-in-out infinite; }
 @keyframes handPulse { 0%,100% { transform: translate(-50%,-50%) scale(1); } 50% { transform: translate(-50%,-50%) scale(1.06); } }
+/* split-screen: one prompt centered over each half */
+.hand-hint-side {
+  position: fixed; top: 42%; transform: translate(-50%, -50%);
+  z-index: 7; padding: 11px 20px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62); border: 1px solid rgba(255, 255, 255, 0.25);
+  font-size: 1rem; font-weight: 700; color: #fff; white-space: nowrap;
+  backdrop-filter: blur(4px); opacity: 0; pointer-events: none; transition: opacity 0.25s;
+}
+#hand-hint-l { left: 25%; }
+#hand-hint-r { left: 75%; }
+.hand-hint-side.show { opacity: 1; animation: handPulseSide 1.6s ease-in-out infinite; }
+@keyframes handPulseSide { 0%,100% { transform: translate(-50%,-50%) scale(1); } 50% { transform: translate(-50%,-50%) scale(1.06); } }
 
 /* belt rank badge + level-up toast */
 #belt {

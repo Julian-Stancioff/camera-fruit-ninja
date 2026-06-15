@@ -15,8 +15,10 @@
   <canvas id="game-canvas"></canvas>
   <canvas id="overlay"></canvas>
 
-  <!-- Prompt shown when the camera can't see a hand mid-game -->
-  <div id="hand-hint">✋ Show your hand to the camera</div>
+  <!-- "Bring your hand back" — centered (solo/versus) + one per side (split) -->
+  <div id="hand-hint">✋ Bring your hand back</div>
+  <div id="hand-hint-l" class="hand-hint-side">✋ P1 — bring your hand back</div>
+  <div id="hand-hint-r" class="hand-hint-side">✋ P2 — bring your hand back</div>
 
   <!-- Settings (live feel tuning) -->
   <button id="settings-btn" title="Settings" aria-label="Settings">⚙</button>

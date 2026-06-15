@@ -70,6 +70,15 @@ let misses = 0;                 // consecutive frames MediaPipe found no hand
 const COAST_FRAMES = 8;         // ~250ms: hold the blade through brief dropouts
 const trail = [];
 const TRAIL_MS = 150;
+
+// Hand LOCK: keep the blade glued to the initially-chosen hand and ignore stray
+// hands that wander into frame; detect when the chosen hand leaves so we can prompt
+// ("bring your hand back") and slow the fruit until it's re-acquired.
+const LOST_FRAMES = 8;          // detect-frames with no hand → declare it "lost"
+const SLOW_LOST = 0.12;         // fruit crawl to ~stopped while the hand is gone
+const SLOW_EASE = 0.18;         // per-frame easing of the slow factor
+const mainLock = { lockPos: null, landmarks: null, present: false, lostFrames: 0, lost: false, slow: 1 };
+function resetLock(l) { l.lockPos = null; l.landmarks = null; l.present = false; l.lostFrames = 0; l.lost = false; l.slow = 1; }
 const _sp = smoothingParams(settings.smoothing);
 const cursorFX = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 const cursorFY = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
@@ -78,8 +87,8 @@ const cursorFY = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 let splitGame = null;
 const SPLIT_GAIN = 1.35;
 const splitSide = {
-  left:  { fx: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), fy: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), prev: null, cur: null, miss: 0, trail: [] },
-  right: { fx: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), fy: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), prev: null, cur: null, miss: 0, trail: [] },
+  left:  { fx: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), fy: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), prev: null, cur: null, miss: 0, trail: [], lockPos: null, landmarks: null, present: false, lostFrames: 0, lost: false, slow: 1 },
+  right: { fx: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), fy: new OneEuroFilter(30, _sp.minCutoff, _sp.beta), prev: null, cur: null, miss: 0, trail: [], lockPos: null, landmarks: null, present: false, lostFrames: 0, lost: false, slow: 1 },
 };
 
 const HAND_CONNECTIONS = [
@@ -110,20 +119,35 @@ function mapPoint(nx, ny) {
   return { x: (1 - gx) * cw, y: gy * ch };
 }
 
-// Tracker runs with numHands:2 (for split-screen). In single-blade modes, pick the
-// hand NEAREST the last fingertip so the blade can't flip between hands frame-to-frame
-// (that flip was the "jumps up/down and corrects itself" glitch).
-function pickBlade(result) {
-  const hands = result.hands || [];
-  if (hands.length === 0) return null;
-  if (hands.length === 1 || !lastRawBlade) return hands[0];
-  let best = hands[0], bd = Infinity;
-  for (const h of hands) {
-    const d = (h.x - lastRawBlade.x) ** 2 + (h.y - lastRawBlade.y) ** 2;
-    if (d < bd) { bd = d; best = h; }
-  }
+// Tracker runs with numHands:2 (for split-screen). Pick the hand to control a blade,
+// LOCKED onto the previously-chosen hand by proximity so a stray hand that wanders
+// into frame can't hijack the blade. region: null = whole frame (solo/versus);
+// "left"/"right" = a split half. Returns {x,y,lm} (lm = that hand's 21 landmarks).
+function nearest(cands, to) {
+  if (!to) return cands[0];
+  let best = cands[0], bd = Infinity;
+  for (const c of cands) { const d = (c.x - to.x) ** 2 + (c.y - to.y) ** 2; if (d < bd) { bd = d; best = c; } }
   return best;
 }
+function pickLockedHand(result, lock, region) {
+  const hands = result.present ? result.hands : [];
+  const all = result.allLandmarks || [];
+  const cands = [];
+  for (let i = 0; i < hands.length; i++) {
+    const h = hands[i];
+    if (region) { const mx = 1 - h.x; if (region === "left" ? mx >= 0.5 : mx < 0.5) continue; }
+    cands.push({ x: h.x, y: h.y, lm: all[i] || null });
+  }
+  if (!cands.length) return null;
+  // one hand (or no lock yet / re-acquiring) → take it; multiple → stick to the lock
+  return nearest(cands, lock.lockPos);
+}
+// Advance a lock's presence bookkeeping from the chosen hand (or null this frame).
+function updateLock(lock, chosen) {
+  if (chosen) { lock.lockPos = { x: chosen.x, y: chosen.y }; lock.landmarks = chosen.lm; lock.present = true; lock.lostFrames = 0; lock.lost = false; }
+  else { lock.present = false; lock.lostFrames++; if (lock.lostFrames >= LOST_FRAMES) lock.lost = true; }
+}
+function easeSlow(lock) { lock.slow += ((lock.lost ? SLOW_LOST : 1) - lock.slow) * SLOW_EASE; }
 
 // ---------- music helpers (separate menu / in-game volumes) ----------
 const menuVol = () => { const v = parseFloat(localStorage.getItem("fn_menu_vol") ?? "0.7"); return isNaN(v) ? 0.7 : v; };
@@ -180,6 +204,7 @@ async function start() {
     sfx.resume();
     musicMenu();
     $("start-screen").classList.add("gone");
+    overlay.classList.add("overlay-top"); // keep trail + PiP hand-mapping above the camera PiP
     if (DEBUG) $("hud").hidden = false; // dev HUD only with ?debug
     running = true;
     startLoop();
@@ -320,6 +345,7 @@ function startSolo() {
   setHudMode("solo");
   if (!game) game = new Game(scene, effects, callbacks);
   controller = game;
+  resetLock(mainLock);
   resetHud();
   musicGame();
   enterReady({
@@ -363,6 +389,7 @@ function enterVersusReady(players) {
   $("versus-screen").hidden = true;
   $("game-hud").hidden = false;
   setHudMode("versus");
+  resetLock(mainLock);
   enterReady({
     needHands: 1,
     label: "Show your hand to get ready ✋",
@@ -507,7 +534,7 @@ function resumeGame() {
   if (!paused) return;
   const delta = performance.now() - pauseStart;
   if (mode === "solo") soloStartTs += delta;            // don't let the timer jump
-  if (mode === "split" && splitGame) splitGame.endAt += delta;
+  if (mode === "split" && splitGame) { splitGame.endAt += delta; splitGame.startAt += delta; }
   paused = false;
   $("pause-screen").hidden = true;
   if (mode !== "versus") musicGame();
@@ -548,7 +575,7 @@ function startSplit() {
   musicGame();
   if (!splitGame) splitGame = new SplitGame(scene.renderer, splitCallbacks);
   for (const k of ["left", "right"]) {
-    const s = splitSide[k]; s.prev = s.cur = null; s.miss = 0; s.trail.length = 0; s.fx.reset(); s.fy.reset();
+    const s = splitSide[k]; s.prev = s.cur = null; s.miss = 0; s.trail.length = 0; s.fx.reset(); s.fy.reset(); resetLock(s);
   }
   $("vs-you-name").textContent = "Player 1";
   $("vs-opp-name").textContent = "Player 2";
@@ -596,12 +623,13 @@ function mapHalf(hand, side) {
   return { x: gx * hw, y: gy * H };
 }
 
-// Update one side's smoothed blade; returns its slice segment (local coords) or null.
-function updateSplitSide(s, side, hand, now, dtMs, freq) {
+// Update one side's smoothed blade + lock; returns its slice segment (local) or null.
+function updateSplitSide(s, side, chosen, now, dtMs, freq) {
   const off = side === "right" ? Math.floor(window.innerWidth / 2) : 0;
+  updateLock(s, chosen);
   let seg = null;
-  if (hand) {
-    const raw = mapHalf(hand, side);
+  if (chosen) {
+    const raw = mapHalf(chosen, side);
     if (s.miss >= 2) { s.fx.reset(); s.fy.reset(); s.prev = null; }
     s.miss = 0;
     const cur = { x: s.fx.filter(raw.x, freq), y: s.fy.filter(raw.y, freq) };
@@ -617,18 +645,11 @@ function updateSplitSide(s, side, hand, now, dtMs, freq) {
   return seg;
 }
 
-// Assign the two detected hands to sides by mirrored x; update both; return segments.
+// Each side locks onto a hand in its own half (mirrored x), ignoring stray hands.
 function handleSplitHands(result, now, dtMs, freq) {
-  const hands = result.present ? result.hands : [];
-  let leftHand = null, rightHand = null;
-  for (const h of hands) {
-    const mx = 1 - h.x;
-    if (mx < 0.5) { if (!leftHand) leftHand = h; }
-    else if (!rightHand) rightHand = h;
-  }
   return {
-    l: updateSplitSide(splitSide.left, "left", leftHand, now, dtMs, freq),
-    r: updateSplitSide(splitSide.right, "right", rightHand, now, dtMs, freq),
+    l: updateSplitSide(splitSide.left, "left", pickLockedHand(result, splitSide.left, "left"), now, dtMs, freq),
+    r: updateSplitSide(splitSide.right, "right", pickLockedHand(result, splitSide.right, "right"), now, dtMs, freq),
   };
 }
 
@@ -654,7 +675,7 @@ function exitReady() {
   readyGate = null;
   lastVideoTime = -1; lastDetectTs = 0; // force the game loop to re-detect cleanly
   $("webcam").classList.remove("cam-ready");
-  overlay.classList.remove("overlay-top");
+  // overlay stays at overlay-top so the in-game PiP hand-mapping draws above the camera
   $("ready-screen").hidden = true;
 }
 
@@ -738,13 +759,13 @@ function tick(now) {
   }
 
   let segment = null, splitSegLeft = null, splitSegRight = null;
-  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+  if (injectedResult || (video.readyState >= 2 && video.currentTime !== lastVideoTime)) {
     lastVideoTime = video.currentTime;
     const dtMs = lastDetectTs ? now - lastDetectTs : 33;
     const freq = dtMs > 0 ? 1000 / dtMs : 30;
     lastDetectTs = now;
 
-    const result = tracker.detect(video, now);
+    const result = injectedResult || tracker.detect(video, now);
     if (DEBUG) updateHud(result, now);
     lastResult = result;
 
@@ -752,7 +773,8 @@ function tick(now) {
       const segs = handleSplitHands(result, now, dtMs, freq);
       splitSegLeft = segs.l; splitSegRight = segs.r;
     } else {
-      const blade = result.present ? pickBlade(result) : null;
+      const blade = pickLockedHand(result, mainLock, null);
+      updateLock(mainLock, blade);
       if (blade) {
         lastRawBlade = blade;
         const raw = mapPoint(blade.x, blade.y);
@@ -795,16 +817,20 @@ function tick(now) {
     }
   }
 
+  // Ease slow factors every frame, then drive the game with per-side dt scaling so
+  // fruit slow to a crawl on whichever side just lost its hand.
+  easeSlow(mainLock); easeSlow(splitSide.left); easeSlow(splitSide.right);
   if (mode === "split") {
-    if (splitGame) { splitGame.update(dt, splitSegLeft, splitSegRight); splitGame.render(); }
+    if (splitGame) { splitGame.update(dt, splitSegLeft, splitSegRight, splitSide.left.slow, splitSide.right.slow); splitGame.render(); }
   } else {
-    if (controller) controller.update(dt, segment);
+    if (controller) controller.update(dt * mainLock.slow, segment);
     if (scene) scene.render();
   }
   drawOverlay(now);
 }
 
 let lastResult = { present: false, landmarks: [] };
+let injectedResult = null; // test hook: forces a synthetic detection result when set
 function updateHud(result, now) {
   const d = now - lastFrameTs;
   lastFrameTs = now;
@@ -815,10 +841,20 @@ function updateHud(result, now) {
   else { t.textContent = "● searching…"; t.className = "hud-pill lost"; }
 }
 
-// Centered prompt when the camera can't see a hand mid-game.
-function updateHandHint(now) {
-  const show = game && game.playing && now - lastHandTs > 700;
-  $("hand-hint").classList.toggle("show", show);
+// "Bring your hand back" prompt — solo/versus centered, split per-side. Driven purely
+// by the lock's presence, so it vanishes the instant the hand is detected again (and
+// only reappears if the hand disappears once more).
+function updateHandHint() {
+  if (mode === "split") {
+    $("hand-hint").classList.remove("show");
+    const playing = !!splitGame?.playing;
+    $("hand-hint-l").classList.toggle("show", playing && splitSide.left.lost);
+    $("hand-hint-r").classList.toggle("show", playing && splitSide.right.lost);
+  } else {
+    $("hand-hint-l").classList.remove("show");
+    $("hand-hint-r").classList.remove("show");
+    $("hand-hint").classList.toggle("show", inActiveGame() && mainLock.lost);
+  }
 }
 
 // ---------- settings panel (live feel tuning) ----------
@@ -876,11 +912,53 @@ $("mode-split").addEventListener("click", startSplit);
 // ---------- 2D overlay: blade trail + debug skeleton ----------
 function drawOverlay(now) {
   octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-  if (mode === "split") { drawSplitOverlay(now); return; }
+  if (mode === "split") {
+    drawSplitOverlay(now);
+    if (splitGame?.playing) {
+      if (splitSide.left.present) drawHandOnPip(splitSide.left.landmarks, $("webcam"), "rgba(255,150,150,0.7)", "#ff5a5a");
+      if (splitSide.right.present) drawHandOnPip(splitSide.right.landmarks, $("webcam2"), "rgba(150,190,255,0.7)", "#5aa0ff");
+    }
+    return;
+  }
   if (showSkeleton && lastResult.present) drawSkeleton(lastResult.landmarks);
   if (mode === "versus") drawOppTrail(now);
   drawTrail(now);
   drawTip();
+  // Whole-hand mapping on the camera PiP — see the tracking stay locked on your hand.
+  if (inActiveGame() && mainLock.present && mainLock.landmarks)
+    drawHandOnPip(mainLock.landmarks, $("webcam"), "rgba(255,236,180,0.7)", "#ffd24a");
+}
+
+// Draw a hand's 21 landmarks onto a camera PiP (full skeleton faint + the index
+// finger to the tip emphasized — the "blade" finger). landmarks are normalized to
+// the full camera frame; mapToCam handles the PiP's cover-scale + mirror.
+function drawHandOnPip(landmarks, videoEl, baseColor, indexColor) {
+  if (!landmarks || !videoEl) return;
+  const rect = videoEl.getBoundingClientRect();
+  if (rect.width < 4 || rect.height < 4) return;
+  const vw = videoEl.videoWidth || 1280, vh = videoEl.videoHeight || 720;
+  octx.save();
+  octx.lineCap = "round"; octx.lineJoin = "round";
+  octx.strokeStyle = baseColor; octx.fillStyle = baseColor; octx.lineWidth = 2; octx.globalAlpha = 0.9;
+  for (const [a, b] of HAND_CONNECTIONS) {
+    const pa = mapToCam(landmarks[a].x, landmarks[a].y, rect, vw, vh);
+    const pb = mapToCam(landmarks[b].x, landmarks[b].y, rect, vw, vh);
+    octx.beginPath(); octx.moveTo(pa.x, pa.y); octx.lineTo(pb.x, pb.y); octx.stroke();
+  }
+  for (let i = 0; i < landmarks.length; i++) {
+    const p = mapToCam(landmarks[i].x, landmarks[i].y, rect, vw, vh);
+    octx.beginPath(); octx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); octx.fill();
+  }
+  octx.strokeStyle = indexColor; octx.fillStyle = indexColor; octx.lineWidth = 3.5;
+  octx.shadowColor = indexColor; octx.shadowBlur = 7;
+  for (const [a, b] of [[5, 6], [6, 7], [7, 8]]) {
+    const pa = mapToCam(landmarks[a].x, landmarks[a].y, rect, vw, vh);
+    const pb = mapToCam(landmarks[b].x, landmarks[b].y, rect, vw, vh);
+    octx.beginPath(); octx.moveTo(pa.x, pa.y); octx.lineTo(pb.x, pb.y); octx.stroke();
+  }
+  const tip = mapToCam(landmarks[8].x, landmarks[8].y, rect, vw, vh);
+  octx.beginPath(); octx.arc(tip.x, tip.y, 5, 0, Math.PI * 2); octx.fill();
+  octx.restore();
 }
 
 // two blade trails (P1 yellow / P2 blue) + a center divider
@@ -987,6 +1065,16 @@ if (new URLSearchParams(location.search).has("test")) {
     get you() { return you; },
     get readyActive() { return !!readyGate; },
     forceReady() { if (readyGate && !readyGate.done) { readyGate.done = true; readyGate.onConfirmed(); } },
+    // inject a synthetic detection (hands = [{x,y}, …] in normalized cam coords; []/null = no hand)
+    setHands(hands) {
+      const mk = (h) => Array.from({ length: 21 }, (_, i) => (i === 8 ? { x: h.x, y: h.y, z: 0 } : { x: h.x + (i - 8) * 0.004, y: h.y + (i - 8) * 0.012, z: 0 }));
+      injectedResult = (hands && hands.length)
+        ? { present: true, blade: hands[0], hands: hands.map((h) => ({ x: h.x, y: h.y })), landmarks: mk(hands[0]), allLandmarks: hands.map(mk), handedness: null }
+        : { present: false, blade: null, hands: [], landmarks: [], allLandmarks: [], handedness: null };
+    },
+    clearHands() { injectedResult = null; },
+    get mainLock() { return mainLock; },
+    get splitLocks() { return { left: splitSide.left, right: splitSide.right }; },
     splitSpawn(side, type) {
       const half = splitGame[side];
       const r = Math.min(half.scene.w, half.scene.h) * 0.06;
@@ -995,7 +1083,7 @@ if (new URLSearchParams(location.search).has("test")) {
       return { x: f.x, y: f.y };
     },
     splitSwipe(side, x0, y0, x1, y1) {
-      splitGame[side].update(0.016, { a: { x: x0, y: y0 }, b: { x: x1, y: y1 }, speed: 6000 }, performance.now(), false);
+      splitGame[side].update(0.016, { a: { x: x0, y: y0 }, b: { x: x1, y: y1 }, speed: 6000 }, performance.now(), false, 0, 1);
     },
     splitState() {
       return { playing: splitGame.playing, left: splitGame.left.score, right: splitGame.right.score, hw: splitGame.left.scene.w };
