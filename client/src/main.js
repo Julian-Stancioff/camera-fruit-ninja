@@ -52,6 +52,30 @@ const oppTrail = [];
 // can dial it in on the live site without a redeploy.
 const PARAMS = new URLSearchParams(location.search);
 const DEBUG = PARAMS.has("debug");
+// ?katdebug — lets a remote session watch katana tracking on the REAL camera: it logs
+// the detector's state at 4Hz and keeps the last ~1.5s of downscaled frames so they can
+// be pulled out and replayed offline. Every fix so far has been tuned against a guessed
+// synthetic room and then failed in the real one; this is how we tune against the truth.
+const KATDEBUG = PARAMS.has("katdebug");
+let dbgCanvas = null, dbgCtx = null, lastKatLog = 0, lastKatGrab = 0;
+const dbgFrames = [];
+function katDebugCapture(now) {
+  if (now - lastKatGrab < 90) return;   // ~11Hz: 16 frames covers ~1.5s
+  lastKatGrab = now;
+  if (!dbgCtx) {
+    dbgCanvas = document.createElement("canvas");
+    dbgCanvas.width = 192; dbgCanvas.height = 108;
+    dbgCtx = dbgCanvas.getContext("2d", { willReadFrequently: true });
+  }
+  try {
+    dbgCtx.drawImage(video, 0, 0, 192, 108);
+    dbgFrames.push(dbgCanvas.toDataURL("image/png"));
+    if (dbgFrames.length > 16) dbgFrames.shift();
+  } catch { /* undecoded frame */ }
+}
+// Pulled by the remote session to replay this exact camera offline.
+window.__katGrab = () => dbgFrames.slice();
+window.__katInfo = () => ({ frames: dbgFrames.length, mode: bladeMode, playing: inActiveGame() });
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 
@@ -764,6 +788,13 @@ function katanaTick(now) {
     }
   }
 
+  if (KATDEBUG) {
+    katDebugCapture(now);
+    if (now - lastKatLog > 250) {
+      lastKatLog = now;
+      console.log("[kat] " + JSON.stringify({ phase: "searching", seen: objectBlade.lastSeen ? 1 : 0 }));
+    }
+  }
   octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
   drawKatanaPreview(katCand);
   if (objectBlade.lastSeen) drawBladeOnPip(objectBlade.lastSeen, video);
@@ -949,6 +980,16 @@ function tick(now) {
       // keep working unchanged; it holds no landmarks here.
       const ob = objectBlade.update(video, dtMs);
       bladeSeen = ob ? ob.endsNorm : null;
+      if (KATDEBUG) {
+        katDebugCapture(now);
+        if (now - lastKatLog > 250) {
+          lastKatLog = now;
+          console.log("[kat] " + JSON.stringify(ob
+            ? { found: 1, deg: +(ob.angle * 180 / Math.PI).toFixed(1), conf: +(ob.conf || 0).toFixed(2),
+                ends: ob.endsNorm.map((e) => [+e.x.toFixed(3), +e.y.toFixed(3)]) }
+            : { found: 0 }));
+        }
+      }
       updateLock(mainLock, ob ? { x: ob.gripNorm.x, y: ob.gripNorm.y, lm: null } : null);
       if (ob) {
         // Map the REAL endpoints — each one individually through mapPoint, never one
