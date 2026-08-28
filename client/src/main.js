@@ -719,8 +719,8 @@ function enterKatana() {
   overlay.classList.add("overlay-top");
   objectBlade.rescan();
   $("kat-actions").hidden = true;
-  $("kat-status").textContent = "Wave your blade \u2694";
-  $("kat-sub").textContent = "Swing it side to side so we can pick it out";
+  $("kat-status").textContent = "Hold your blade up \u2694";
+  $("kat-sub").textContent = "Looking for it\u2026";
   $("katana-screen").hidden = false;
 }
 
@@ -741,13 +741,10 @@ function katanaTick(now) {
       katCand = cand;
       katGate.locked = true;
       $("kat-status").textContent = "Found it \u2014 is this your blade?";
-      $("kat-sub").textContent = "The line should sit along the whole blade";
+      $("kat-sub").textContent = "The points should sit along your blade";
       $("kat-actions").hidden = false;
     } else {
-      const pct = Math.round(objectBlade.scanProgress * 100);
-      $("kat-sub").textContent = pct < 100
-        ? `Keep waving\u2026 ${pct}%`
-        : "Nothing long enough found \u2014 try a clearer background";
+      $("kat-sub").textContent = "Point it up, clear of your body";
     }
   }
 
