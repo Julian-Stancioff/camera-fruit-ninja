@@ -38,7 +38,10 @@ export class Game {
 
   /**
    * @param dt seconds since last frame
-   * @param segment {a:{x,y}, b:{x,y}, speed}|null — fingertip motion this frame
+   * @param segment {a:{x,y}, b:{x,y}, speed}|Array|null — blade motion this frame.
+   *   Katana mode passes an ARRAY, one entry per sample point along the blade. Each
+   *   entry is gated on its OWN speed, so a wrist-whip cuts with the tip while the
+   *   near-stationary base does not.
    */
   update(dt, segment) {
     const w = this.scene.w, h = this.scene.h;
@@ -53,15 +56,20 @@ export class Game {
       }
     }
 
-    const slicing = this.playing && segment && segment.speed > SPEED_GATE;
+    const blades = this.playing && segment
+      ? (Array.isArray(segment) ? segment : [segment]).filter((s) => s && s.speed > SPEED_GATE)
+      : [];
 
     for (let i = this.fruits.length - 1; i >= 0; i--) {
       const f = this.fruits[i];
       f.update(dt, gravity);
 
-      if (slicing && !f.sliced &&
-          segmentHitsCircle(segment.a.x, segment.a.y, segment.b.x, segment.b.y, f.x, f.y, f.radius * HIT_MARGIN)) {
-        const dx = segment.b.x - segment.a.x, dy = segment.b.y - segment.a.y;
+      // First gated segment that reaches the fruit cuts it, and the juice sprays along
+      // that same segment — the part of the blade that actually swung is what cuts.
+      const hit = !f.sliced && blades.find((s) =>
+        segmentHitsCircle(s.a.x, s.a.y, s.b.x, s.b.y, f.x, f.y, f.radius * HIT_MARGIN));
+      if (hit) {
+        const dx = hit.b.x - hit.a.x, dy = hit.b.y - hit.a.y;
         const len = Math.hypot(dx, dy) || 1;
         this._slice(f, i, { x: dx / len, y: dy / len });
         continue;

@@ -7,6 +7,7 @@ import { Game } from "./game/Game.js";
 import { Fruit } from "./game/Fruit.js";
 import { bladeSpeed } from "./game/slice.js";
 import { OneEuroFilter } from "./tracking/OneEuroFilter.js";
+import { ObjectBlade } from "./tracking/ObjectBlade.js";
 import { addXP, getXP, levelFor, levelProgress, nextLevel } from "./game/belts.js";
 import { connect } from "./net/net.js";
 import { NetGame } from "./net/NetGame.js";
@@ -34,6 +35,15 @@ let socket = null, netGame = null, you = 0, oppName = "Opponent";
 let lastBladeEmit = 0;
 let soloStartTs = 0, lastMusicTs = 0;
 let readyGate = null, readyResult = null; // hand-confirmation gate before a match
+
+// Katana / object blade: the player holds a real sword (or a stick, a bottle, anything)
+// and it becomes the blade. Kept as a separate flag from `mode` so every solo code path
+// — timer, music, pause, replay — works untouched; only the blade's source changes.
+let bladeMode = "hand";          // "hand" | "object"
+const objectBlade = new ObjectBlade();
+let katGate = null, katCand = null, katResult = null;
+let bladeLine = null;            // {grip, tip} in screen px, object mode only
+let bladeSamplesPrev = null;     // previous frame's sample points along the blade
 let paused = false, pauseStart = 0;       // pause / quit-to-menu
 const oppTrail = [];
 
@@ -53,6 +63,10 @@ function loadSettings() {
   return {
     sensitivity: clamp(!isNaN(urlGain) ? urlGain : (s.sensitivity ?? 1.8), 1.2, 3.0),
     smoothing: clamp(s.smoothing ?? 0.6, 0, 1),
+    // Blade length as a fraction of screen height. Deliberately NOT the object's true
+    // size — a true-to-scale sword sweeps half the screen and slices everything. This
+    // keeps a katana's reach in the same ballpark as a hand swipe.
+    bladeLen: clamp(s.bladeLen ?? 0.2, 0.1, 0.35),
   };
 }
 function saveSettings() { localStorage.setItem("fn_settings", JSON.stringify(settings)); }
@@ -148,6 +162,28 @@ function updateLock(lock, chosen) {
   else { lock.present = false; lock.lostFrames++; if (lock.lostFrames >= LOST_FRAMES) lock.lost = true; }
 }
 function easeSlow(lock) { lock.slow += ((lock.lost ? SLOW_LOST : 1) - lock.slow) * SLOW_EASE; }
+
+// ---------- object blade geometry (screen px) ----------
+// Screen-space blade from the grip: fixed length along the tracked angle. The camera
+// image is mirrored on screen, so the angle mirrors with it.
+function bladeFrom(grip, camAngle) {
+  const a = Math.PI - camAngle;
+  const L = settings.bladeLen * window.innerHeight;
+  return { grip, tip: { x: grip.x + Math.cos(a) * L, y: grip.y + Math.sin(a) * L } };
+}
+// Cut with the blade from mid-shaft to tip. The hilt end is your fist — letting it cut
+// would slice fruit you never swung at. Each sample is speed-gated on its own downstream,
+// so a wrist-whip cuts with the fast tip while the near-still base does not.
+const BLADE_T0 = 0.35, BLADE_SAMPLES = 6;
+function bladeSamples({ grip, tip }) {
+  const out = [];
+  for (let i = 0; i < BLADE_SAMPLES; i++) {
+    const t = BLADE_T0 + (1 - BLADE_T0) * (i / (BLADE_SAMPLES - 1));
+    out.push({ x: grip.x + (tip.x - grip.x) * t, y: grip.y + (tip.y - grip.y) * t });
+  }
+  return out;
+}
+const angleDelta = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 
 // ---------- music helpers (separate menu / in-game volumes) ----------
 const menuVol = () => { const v = parseFloat(localStorage.getItem("fn_menu_vol") ?? "0.7"); return isNaN(v) ? 0.7 : v; };
@@ -348,17 +384,20 @@ function startSolo() {
   resetLock(mainLock);
   resetHud();
   musicGame();
+  // Object mode already confirmed the blade on the katana screen — go straight in.
+  if (bladeMode === "object") { runCountdown(3, () => { game.reset(); game.start(); }); return; }
   enterReady({
     needHands: 1,
     label: "Show your hand to the camera ✋",
     onConfirmed: () => { exitReady(); runCountdown(3, () => { game.reset(); game.start(); }); },
   });
 }
-$("mode-solo").addEventListener("click", startSolo);
+$("mode-solo").addEventListener("click", () => { bladeMode = "hand"; startSolo(); });
 $("mode-versus").addEventListener("click", () => openVersus());
 
 function openVersus(autoCode) {
   mode = "versus";
+  bladeMode = "hand"; // networked + split modes stay on the fingertip
   $("mode-screen").hidden = true;
   $("versus-screen").hidden = false;
   $("vs-choose").hidden = false;
@@ -499,7 +538,9 @@ function teardownSocket() {
 }
 function backToMenu() {
   teardownSocket();
+  exitKatana();
   mode = "solo";
+  bladeMode = "hand";
   $("gameover").hidden = true;
   $("again-btn").textContent = "Play again";
   $("menu-btn").hidden = true;
@@ -521,7 +562,7 @@ function inActiveGame() {
          (mode === "versus" && netGame?.playing);
 }
 function pauseGame() {
-  if (paused || readyGate || !inActiveGame()) return;
+  if (paused || readyGate || katGate || !inActiveGame()) return;
   paused = true; pauseStart = performance.now();
   const versus = mode === "versus";
   $("pause-versus-note").hidden = !versus;
@@ -567,6 +608,7 @@ const splitCallbacks = {
 
 function startSplit() {
   mode = "split";
+  bladeMode = "hand";
   controller = null; // split is driven directly in tick()
   $("mode-screen").hidden = true;
   $("gameover").hidden = true;
@@ -652,6 +694,109 @@ function handleSplitHands(result, now, dtMs, freq) {
     r: updateSplitSide(splitSide.right, "right", pickLockedHand(result, splitSide.right, "right"), now, dtMs, freq),
   };
 }
+
+// ============================ katana / object enrolment ============================
+// Hold the object up; we scan for it every frame and, once the detection holds steady,
+// offer Approve / Deny. Approving stores the object's appearance AND its angle offset
+// from the hand — that offset is what lets tracking fall back to the hand's own
+// orientation on the frames where a mirror-finish blade vanishes into the background.
+function startKatana() {
+  bladeMode = "object";
+  $("mode-screen").hidden = true;
+  objectBlade.reset();
+  objectBlade.load();      // seed with the last approved object, if any
+  enterKatana();
+}
+$("mode-katana").addEventListener("click", startKatana);
+
+function enterKatana() {
+  katGate = { steadySince: 0, locked: false };
+  katCand = null; katResult = null;
+  const p = video.play && video.play();
+  if (p && p.catch) p.catch(() => {});
+  $("webcam").classList.remove("pip-left", "cam-off");
+  $("webcam").classList.add("cam-ready");
+  $("webcam2").hidden = true;
+  overlay.classList.add("overlay-top");
+  $("kat-actions").hidden = true;
+  $("kat-status").textContent = "Hold your blade up \u2694";
+  $("kat-sub").textContent = "Keep the hand gripping it in view";
+  $("katana-screen").hidden = false;
+}
+
+function exitKatana() {
+  if (!katGate) return;
+  katGate = null; katCand = null;
+  lastVideoTime = -1; lastDetectTs = 0; // force a clean re-detect in the game loop
+  $("webcam").classList.remove("cam-ready");
+  $("katana-screen").hidden = true;
+}
+
+function katanaTick(now) {
+  if (video.readyState >= 2) katResult = tracker.detect(video, now);
+  const lm = katResult?.allLandmarks?.[0] || null;
+
+  if (!katGate.locked) {
+    const cand = lm ? objectBlade.scan(video, lm) : null;
+    // A detection has to agree with the previous frame for ~0.5s before we offer it, so
+    // a single fluke frame is never what you end up approving.
+    if (cand && katCand && Math.abs(angleDelta(cand.angle, katCand.angle)) < 0.25) {
+      if (!katGate.steadySince) katGate.steadySince = now;
+    } else katGate.steadySince = 0;
+    katCand = cand;
+    if (cand && katGate.steadySince && now - katGate.steadySince > 500) {
+      katGate.locked = true;
+      $("kat-status").textContent = "Found it \u2014 is this your blade?";
+      $("kat-sub").textContent = "The line should run from your grip to the tip";
+      $("kat-actions").hidden = false;
+    } else if (!lm) $("kat-sub").textContent = "Show the hand holding it";
+    else if (!cand) $("kat-sub").textContent = "Hold it out clear of your body";
+  }
+
+  octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  if (lm) drawKatanaPreview(lm, katCand);
+}
+
+function drawKatanaPreview(lm, cand) {
+  const rect = video.getBoundingClientRect();
+  if (rect.width < 4) return;
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  octx.save();
+  octx.lineCap = "round";
+  octx.strokeStyle = "rgba(255,236,180,0.5)"; octx.lineWidth = 2;
+  for (const [a, b] of HAND_CONNECTIONS) {
+    const pa = mapToCam(lm[a].x, lm[a].y, rect, vw, vh), pb = mapToCam(lm[b].x, lm[b].y, rect, vw, vh);
+    octx.beginPath(); octx.moveTo(pa.x, pa.y); octx.lineTo(pb.x, pb.y); octx.stroke();
+  }
+  if (cand) {
+    const g = mapToCam(cand.gripNorm.x, cand.gripNorm.y, rect, vw, vh);
+    const t = mapToCam(cand.tipNorm.x, cand.tipNorm.y, rect, vw, vh);
+    octx.shadowColor = "#8fe3ff"; octx.shadowBlur = 18;
+    octx.strokeStyle = "#8fe3ff"; octx.lineWidth = 6;
+    octx.beginPath(); octx.moveTo(g.x, g.y); octx.lineTo(t.x, t.y); octx.stroke();
+    octx.fillStyle = "#fff";
+    octx.beginPath(); octx.arc(t.x, t.y, 7, 0, Math.PI * 2); octx.fill();
+  }
+  octx.restore();
+}
+
+$("kat-accept").addEventListener("click", () => {
+  if (!katCand) return;
+  objectBlade.accept(katCand);
+  exitKatana();
+  startSolo();
+});
+$("kat-deny").addEventListener("click", () => {
+  katGate.locked = false; katGate.steadySince = 0; katCand = null;
+  $("kat-actions").hidden = true;
+  $("kat-status").textContent = "Try again \u2694";
+  $("kat-sub").textContent = "Turn it a little, or hold it against a clearer background";
+});
+$("kat-skip").addEventListener("click", () => {
+  bladeMode = "hand";
+  exitKatana();
+  startSolo();
+});
 
 // ============================ hand-confirmation "ready" gate ============================
 // Before a match: show the camera big, draw the live hand skeleton in colour, and
@@ -748,6 +893,7 @@ function tick(now) {
   const dt = lastTickTs ? Math.min((now - lastTickTs) / 1000, 0.05) : 0.016;
   lastTickTs = now;
 
+  if (katGate) { katanaTick(now); return; }  // object-enrolment gate owns the frame
   if (readyGate) { readyTick(now); return; } // hand-confirmation gate owns the frame
 
   // Paused (solo & split only) — hold the frame: keep painting but advance nothing.
@@ -777,15 +923,31 @@ function tick(now) {
       updateLock(mainLock, blade);
       if (blade) {
         lastRawBlade = blade;
-        const raw = mapPoint(blade.x, blade.y);
+        // Object mode anchors on the palm and takes its direction from the tracked
+        // object; hand mode keeps the index fingertip as a single point.
+        const ob = bladeMode === "object" ? objectBlade.update(video, mainLock.landmarks, dtMs) : null;
+        const src = ob ? ob.gripNorm : blade;
+        const raw = mapPoint(src.x, src.y);
         // Reacquire after a multi-frame gap: snap the filter to the new point and
         // don't form a slice segment this frame (avoids a ghost slice across the gap).
-        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; }
+        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; bladeSamplesPrev = null; }
         misses = 0;
         // Smooth in pixel space: clean cursor → clean slice segments → reliable cuts.
         const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
-        if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
-        trail.push({ x: cur.x, y: cur.y, t: now });
+        if (ob) {
+          bladeLine = bladeFrom(cur, ob.angle);
+          const samples = bladeSamples(bladeLine);
+          // One segment per point along the blade — Game gates each on its own speed.
+          if (bladeSamplesPrev) {
+            segment = samples.map((b, i) =>
+              ({ a: bladeSamplesPrev[i], b, speed: bladeSpeed(bladeSamplesPrev[i], b, dtMs) }));
+          }
+          bladeSamplesPrev = samples;
+          trail.push({ x: bladeLine.tip.x, y: bladeLine.tip.y, t: now });
+        } else {
+          if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
+          trail.push({ x: cur.x, y: cur.y, t: now });
+        }
         bladePrev = cur; bladeCur = cur; lastHandTs = now;
         // Versus: stream our fingertip to the opponent (~20Hz), normalized.
         if (mode === "versus" && netGame?.playing && socket && now - lastBladeEmit > 50) {
@@ -796,10 +958,12 @@ function tick(now) {
         // coast through brief MediaPipe dropouts instead of dropping the blade.
         misses++;
         if (misses <= COAST_FRAMES && bladeCur) {
-          trail.push({ x: bladeCur.x, y: bladeCur.y, t: now });
+          const p = bladeLine ? bladeLine.tip : bladeCur;
+          trail.push({ x: p.x, y: p.y, t: now });
         } else {
           cursorFX.reset(); cursorFY.reset();
           bladePrev = null; bladeCur = null;
+          bladeLine = null; bladeSamplesPrev = null;
         }
       }
     }
@@ -877,8 +1041,14 @@ function wireSettings() {
     cursorFX.beta = cursorFY.beta = sp.beta;
     settings.smoothing = parseFloat(smooth.value); saveSettings(); upd();
   };
+  const bladeEl = $("set-blade");
+  const updBlade = () => { $("set-blade-val").textContent = `${Math.round(settings.bladeLen * 100)}%`; };
+  bladeEl.value = settings.bladeLen;
+  updBlade();
+  bladeEl.oninput = () => { settings.bladeLen = parseFloat(bladeEl.value); saveSettings(); updBlade(); };
   $("set-reset").onclick = () => {
-    sens.value = 1.8; smooth.value = 0.6; sens.oninput(); smooth.oninput();
+    sens.value = 1.8; smooth.value = 0.6; bladeEl.value = 0.2;
+    sens.oninput(); smooth.oninput(); bladeEl.oninput();
   };
   // music volume sliders (separate menu / in-game); moving either previews it live
   const menuv = $("set-menuvol"), gamev = $("set-gamevol");
@@ -923,7 +1093,7 @@ function drawOverlay(now) {
   if (showSkeleton && lastResult.present) drawSkeleton(lastResult.landmarks);
   if (mode === "versus") drawOppTrail(now);
   drawTrail(now);
-  drawTip();
+  if (bladeMode === "object" && bladeLine) drawBlade(); else drawTip();
   // Whole-hand mapping on the camera PiP — see the tracking stay locked on your hand.
   if (inActiveGame() && mainLock.present && mainLock.landmarks)
     drawHandOnPip(mainLock.landmarks, $("webcam"), "rgba(255,236,180,0.7)", "#ffd24a");
@@ -1023,6 +1193,23 @@ function drawTrail(now) {
     octx.strokeStyle = `rgba(255, 250, 230, ${0.18 + 0.78 * k})`;
     octx.beginPath(); octx.moveTo(a.x, a.y); octx.lineTo(b.x, b.y); octx.stroke();
   }
+  octx.restore();
+}
+
+// The sword itself: a bright bar from the grip to the tip, with the cutting stretch
+// (mid-shaft up) glowing brighter than the hilt so you can see what actually slices.
+function drawBlade() {
+  const { grip, tip } = bladeLine;
+  const mid = { x: grip.x + (tip.x - grip.x) * BLADE_T0, y: grip.y + (tip.y - grip.y) * BLADE_T0 };
+  octx.save();
+  octx.lineCap = "round";
+  octx.strokeStyle = "rgba(190, 200, 215, 0.75)"; octx.lineWidth = 7;
+  octx.beginPath(); octx.moveTo(grip.x, grip.y); octx.lineTo(mid.x, mid.y); octx.stroke();
+  octx.shadowColor = "rgba(180, 235, 255, 0.95)"; octx.shadowBlur = 22;
+  octx.strokeStyle = "rgba(240, 252, 255, 0.95)"; octx.lineWidth = 9;
+  octx.beginPath(); octx.moveTo(mid.x, mid.y); octx.lineTo(tip.x, tip.y); octx.stroke();
+  octx.fillStyle = "#fff";
+  octx.beginPath(); octx.arc(tip.x, tip.y, 7, 0, Math.PI * 2); octx.fill();
   octx.restore();
 }
 

@@ -140,6 +140,8 @@ body {
 #settings-panel {
   position: fixed; left: 18px; top: 136px; z-index: 12;
   width: 268px; padding: 16px 18px; border-radius: 14px;
+  /* six rows now: scroll rather than run off the bottom of a short window */
+  max-height: calc(100vh - 154px); overflow-y: auto;
   background: rgba(18, 12, 4, 0.92); border: 1px solid rgba(255, 255, 255, 0.18);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55); backdrop-filter: blur(6px);
 }
@@ -234,12 +236,14 @@ body {
   -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
   filter: drop-shadow(0 3px 0 #8a3a10) drop-shadow(0 0 22px rgba(255,180,60,0.5));
 }
+/* four panels: 2x2 on desktop, one column when narrow */
 .modes-grid {
-  display: flex; gap: clamp(14px, 2.5vw, 30px); width: 100%; max-width: 1100px;
-  align-items: stretch; justify-content: center; flex-wrap: wrap;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(12px, 2vw, 26px); width: 100%; max-width: 900px; min-height: 0;
+  align-items: stretch; justify-content: center;
 }
 .mode-panel {
-  flex: 1 1 260px; max-width: 360px; min-height: min(48vh, 420px);
+  min-height: min(32vh, 260px);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
   font: inherit; cursor: pointer; color: #fff; text-align: center; padding: 24px;
   background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.35));
@@ -247,8 +251,8 @@ body {
   box-shadow: inset 0 0 40px rgba(0,0,0,0.4);
   transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease, background 0.14s ease;
 }
-.mode-panel .mp-ico { font-size: clamp(3rem, 9vw, 5.5rem); filter: drop-shadow(0 6px 12px rgba(0,0,0,0.5)); }
-.mode-panel .mp-title { font-size: clamp(1.3rem, 3.4vw, 2.2rem); font-weight: 900; letter-spacing: 0.06em; }
+.mode-panel .mp-ico { font-size: clamp(2.4rem, 6vw, 4rem); filter: drop-shadow(0 6px 12px rgba(0,0,0,0.5)); }
+.mode-panel .mp-title { font-size: clamp(1.2rem, 3vw, 1.9rem); font-weight: 900; letter-spacing: 0.06em; }
 .mode-panel .mp-sub { font-size: clamp(0.8rem, 1.8vw, 1rem); color: #cdbfe0; font-weight: 600; }
 .mode-panel:hover, .mode-panel:focus-visible {
   transform: translateY(-6px) scale(1.03); outline: none;
@@ -258,9 +262,9 @@ body {
 }
 .mode-panel:active { transform: translateY(-1px) scale(1.0); }
 @media (max-width: 720px) {
-  .modes-grid { flex-direction: column; flex-wrap: nowrap; overflow-y: auto; }
-  .mode-panel { min-height: 22vh; flex-direction: row; gap: 18px; justify-content: flex-start; }
-  .mode-panel .mp-ico { font-size: 3rem; }
+  .modes-grid { grid-template-columns: 1fr; overflow-y: auto; }
+  .mode-panel { min-height: 18vh; flex-direction: row; gap: 18px; justify-content: flex-start; }
+  .mode-panel .mp-ico { font-size: 2.6rem; }
 }
 
 .vs-or { margin: 14px 0; color: #cdbfa6; font-weight: 700; }
@@ -435,6 +439,46 @@ body {
 .ready-text { text-align: center; padding: 0 20px; }
 #ready-status { font-size: clamp(1.4rem, 4vw, 2.2rem); font-weight: 800; color: #fff; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7); }
 #ready-sub { margin-top: 10px; font-size: clamp(1rem, 2.6vw, 1.35rem); font-weight: 700; color: var(--accent); }
+
+/* katana enrolment gate: same big centred camera, plus approve/deny.
+   z-index 7 clears #webcam.cam-ready (3) and #overlay.overlay-top (5); the container
+   stays click-through so the overlay behind it still reads, only the buttons take clicks. */
+#katana-screen {
+  position: fixed; inset: 0; z-index: 7; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center;
+  padding-top: 7vh; background: rgba(8, 4, 2, 0.4);
+}
+#kat-status { font-size: clamp(1.4rem, 4vw, 2.2rem); font-weight: 800; color: #fff; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7); }
+#kat-sub { margin-top: 10px; font-size: clamp(1rem, 2.6vw, 1.35rem); font-weight: 700; color: var(--accent); }
+/* pinned to the bottom of the viewport: the enlarged camera is centred and up to
+   48vw tall, so anything above this line risks sitting on top of it */
+#kat-actions {
+  position: absolute; left: 50%; bottom: 8vh; transform: translateX(-50%);
+  display: flex; gap: 14px; pointer-events: auto;
+}
+#kat-accept {
+  font: inherit; font-size: 1.1rem; font-weight: 800; color: #2a1c0d;
+  background: linear-gradient(180deg, #ffe27a, var(--accent));
+  border: none; border-radius: 999px; padding: 14px 34px; cursor: pointer;
+  box-shadow: 0 6px 0 #b9881f, 0 10px 24px rgba(0, 0, 0, 0.4);
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+#kat-accept:hover { transform: translateY(-1px); }
+#kat-accept:active { transform: translateY(4px); box-shadow: 0 2px 0 #b9881f; }
+#kat-deny {
+  font: inherit; font-size: 1.1rem; font-weight: 800; color: #f3e7cf;
+  background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px; padding: 14px 30px; cursor: pointer;
+}
+#kat-deny:hover { background: rgba(255, 255, 255, 0.18); }
+#kat-deny:active { transform: translateY(3px); }
+#kat-skip {
+  position: absolute; left: 50%; bottom: 1.5vh; transform: translateX(-50%);
+  pointer-events: auto; font: inherit; font-size: 0.85rem; font-weight: 700;
+  color: #f3e7cf; background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 8px; padding: 8px 16px; cursor: pointer;
+}
+#kat-skip:hover { background: rgba(255, 255, 255, 0.18); }
 
 /* in-game top timer */
 #solo-timer {
