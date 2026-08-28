@@ -102,6 +102,20 @@ const MO_BOOST = 1.0;       // motion tiebreaker cap (was 3x votes / 2.2x score)
 const LOCK_T = 5;           // same-line tolerance: 5 bins = 10deg...
 const LOCK_R = 12;          // ...and 12px of rho
 const MISS_MAX = 12;        // missed frames before the lock is forgotten
+const VOTE_MAX = 1200;      // hard ceiling on voting pixels: cost must not scale with
+                            // room clutter. A blade is ~100-300 evidence pixels; when
+                            // more than VOTE_MAX are lit, the strongest win the vote.
+const GLUT = 0.06;          // evidence pixels above this fraction of the frame mean the
+                            // WORLD changed (bg warm-up, exposure shift, camera move),
+                            // not that a blade appeared: nothing may establish, and
+                            // unless already locked the frame is not even worth voting
+                            // on — which also bounds the worst-case cost of exactly
+                            // those frames. Measured live: the two hallucinations were
+                            // a 169px room-spanning chain during warm-up and a door
+                            // edge, both on frames like these.
+const PEAK_FLOOR = 0.05;    // Hough peaks under this fraction of the strongest are not
+                            // worth a run-walk — in a 40%-lit room the peak list was
+                            // thousands long and the sort alone blew the budget
 const MOVE_T = 8;           // |luma delta| above this = the pixel is MOVING and must not
                             // be learned as background: the room is what holds still.
                             // Without this a blade raised through its own final column
@@ -126,11 +140,15 @@ function buffers(model, SW, SH) {
     model.xs = new Int16Array(n);
     model.ys = new Int16Array(n);
     model.sup = new Uint8Array(2 * (SW + SH) + 8);
+    model.hist = new Uint32Array(64);
+    model.pv = new Float32Array(64);  // top-K Hough peaks, preallocated: the peak list
+    model.pt = new Int16Array(64);    // on a busy transition frame ran to thousands of
+    model.pr = new Int16Array(64);    // small arrays plus a sort — pure GC fodder
     // Integer probe offsets, precomputed once: 4 float mults + 2 truncations per probe
     // gone from the hot loop, and the probes land symmetrically (the inline truncation
     // rounded negative offsets one pixel differently from positive ones).
-    model.poff = new Int32Array(8 * OFFS.length);
-    for (let k = 0; k < 8; k++) {
+    model.poff = new Int32Array(DIRS.length * OFFS.length);
+    for (let k = 0; k < DIRS.length; k++) {
       for (let q = 0; q < OFFS.length; q++) {
         model.poff[k * OFFS.length + q] =
           Math.round(DIRS[k][1] * OFFS[q]) * SW + Math.round(DIRS[k][0] * OFFS[q]);
@@ -144,10 +162,13 @@ function buffers(model, SW, SH) {
   return model;
 }
 
-// 8 orientations over 180 deg; we probe along each one's PERPENDICULAR.
+// 6 orientations over 180 deg; we probe along each one's PERPENDICULAR. Six, not
+// eight: worst-case misalignment is 15 deg, which still lands both flanks on the
+// background beside any bar longer than a few px — and the filter is the whole cost
+// of a busy frame, so every probe pair is 4% of the frame budget.
 const DIRS = [];
-for (let i = 0; i < 8; i++) {
-  const a = (i * Math.PI) / 8 + Math.PI / 2;
+for (let i = 0; i < 6; i++) {
+  const a = (i * Math.PI) / 6 + Math.PI / 2;
   DIRS.push([Math.cos(a), Math.sin(a)]);
 }
 
@@ -231,6 +252,9 @@ export function detect(pixels, SW, SH, model, prev) {
   buffers(model, SW, SH);
   const { lum, resp, ev, thin, pol, xs, ys, acc, nr, rho0 } = model;
   const n = SW * SH;
+  // Optional stage profiler: set model.prof = {filter:0,vote:0,walk:0,learn:0,n:0}.
+  const P = model.prof;
+  let mark = P ? performance.now() : 0;
 
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     lum[i] = 0.299 * pixels[p] + 0.587 * pixels[p + 1] + 0.114 * pixels[p + 2];
@@ -241,8 +265,10 @@ export function detect(pixels, SW, SH, model, prev) {
   // still a room — and rolls prevLum forward. Misses age the lock; MISS_MAX of them
   // and it is forgotten, so a lowered sword does not haunt the next raise.
   const finish = (hit, band) => {
+    if (P) { P.walk += performance.now() - mark; mark = performance.now(); }
     const earned = model.bgN >= BG_BAND_MIN && model.lock && model.lock.age >= BAND_AGE;
     learnBg(model, SW, SH, earned && band ? band : null);
+    if (P) { P.learn += performance.now() - mark; P.n++; }
     if (!model.prevLum) model.prevLum = new Float32Array(n);
     model.prevLum.set(lum);
     if (!hit && model.lock && ++model.lock.miss > MISS_MAX) model.lock = null;
@@ -251,12 +277,34 @@ export function detect(pixels, SW, SH, model, prev) {
 
   // Valley/ridge response, and collect the responders so the vote below only walks
   // the handful of pixels that are actually bar-like.
-  resp.fill(0);
+  //
+  // Coarse-to-fine: while a lock is being tracked cleanly, only the window around it
+  // is scanned, with a full-frame scan every 4th frame (fresh background, fresh
+  // challengers). The filter is ~90% of a busy frame's cost and the window is ~20%
+  // of the frame, so tracking frames cost a fraction of acquisition frames. A blade
+  // that outruns the window just misses once — the next frame is a full scan.
   const M = OFFS[OFFS.length - 1] + 1;
+  model.fn = (model.fn | 0) + 1;
+  const Lw = model.lock;
+  // fast-moving locks get full scans: a swing can outrun any static window
+  const light = Lw && Lw.miss === 0 && Lw.age >= BAND_AGE && (Lw.vel || 0) < 6 && model.fn % 4 !== 0;
+  let wx0 = M, wx1 = SW - M, wy0 = M, wy1 = SH - M;
+  if (light) {
+    const mrg = 30;
+    wx0 = Math.max(wx0, Math.floor(Math.min(Lw.e0[0], Lw.e1[0]) - mrg));
+    wx1 = Math.min(wx1, Math.ceil(Math.max(Lw.e0[0], Lw.e1[0]) + mrg));
+    wy0 = Math.max(wy0, Math.floor(Math.min(Lw.e0[1], Lw.e1[1]) - mrg));
+    wy1 = Math.min(wy1, Math.ceil(Math.max(Lw.e0[1], Lw.e1[1]) + mrg));
+    // stale resp outside the window is deliberate: learnBg may read values up to 3
+    // frames old there, and the bg rates make that indistinguishable from fresh
+    for (let y = wy0; y < wy1; y++) resp.fill(0, y * SW + wx0, y * SW + wx1);
+  } else {
+    resp.fill(0);
+  }
   const poff = model.poff, NP = poff.length, NQ = OFFS.length;
   let cnt = 0;
-  for (let y = M; y < SH - M; y++) {
-    for (let x = M; x < SW - M; x++) {
+  for (let y = wy0; y < wy1; y++) {
+    for (let x = wx0; x < wx1; x++) {
       const i = y * SW + x, c = lum[i];
       // Polarity is tracked because it is an OBJECT property: a dark blade is a dark
       // valley at every pixel where it responds at all, while the bright wall sliver
@@ -297,6 +345,7 @@ export function detect(pixels, SW, SH, model, prev) {
       }
     }
   }
+  if (P) { P.filter += performance.now() - mark; mark = performance.now(); }
   if (cnt < 20) return finish(null);
 
   // Evidence = response minus what has always been there. g ramps the subtraction in
@@ -305,11 +354,25 @@ export function detect(pixels, SW, SH, model, prev) {
   // the support test — no stale values, no separate responder check.
   ev.fill(0);
   const g = Math.min(1, model.bgN / BG_WARM);
-  const bg = model.bg;
+  const bg = model.bg, hist = model.hist;
+  hist.fill(0);
+  let evN = 0;
   for (let j = 0; j < cnt; j++) {
     const i = ys[j] * SW + xs[j];
     const e = resp[i] - g * bg[i];
     ev[i] = e > 0 ? e : 0;
+    if (e > EV_MIN) { evN++; hist[Math.min(63, e >> 2)]++; }
+  }
+  const L = model.lock;
+  // Evidence glut: the whole room lit up at once. That is never a blade arriving —
+  // learn the frame and stay quiet unless a healthy lock is already being tracked.
+  if (evN > GLUT * n && !(L && L.miss === 0)) return finish(null);
+  // Bounded vote: keep the strongest voters so cost cannot scale with clutter.
+  let evCut = EV_MIN;
+  if (evN > VOTE_MAX) {
+    let run = 0, b = 63;
+    for (; b > 0; b--) { run += hist[b]; if (run >= VOTE_MAX) break; }
+    evCut = Math.max(EV_MIN, b << 2);
   }
 
   // Vote for straight lines instead of growing connected blobs. A blade crossing a
@@ -321,7 +384,7 @@ export function detect(pixels, SW, SH, model, prev) {
   for (let j = 0; j < cnt; j++) {
     const x = xs[j], y = ys[j], i = y * SW + x;
     const e = ev[i];
-    if (e <= EV_MIN) continue;
+    if (e <= evCut) continue;
     let w = e;
     if (prevLum) w *= 1 + MO_BOOST * Math.min(1, Math.abs(lum[i] - prevLum[i]) / 10);
     for (let t = 0; t < NTH; t++) {
@@ -330,38 +393,46 @@ export function detect(pixels, SW, SH, model, prev) {
     }
   }
 
+  if (P) { P.vote += performance.now() - mark; mark = performance.now(); }
   // Take the strongest few candidate lines, then judge each by the longest CONTIGUOUS
   // run of support along it — not by its total vote. Total vote rewards a line that
   // happens to clip lots of scattered responders; contiguous run is what actually
   // means "a bar lies here".
-  const peaks = [];
+  let accMax = 0;
+  for (let k = 0, m = NTH * nr; k < m; k++) if (acc[k] > accMax) accMax = acc[k];
+  const floor = PEAK_FLOOR * accMax;
+  const { pv, pt, pr } = model;
+  const PK = pv.length;
+  let np = 0;
   for (let t = 0; t < NTH; t++) {
     for (let r = 1; r < nr - 1; r++) {
       const v = acc[t * nr + r];
-      if (v <= 0) continue;
+      if (v <= floor) continue;
       if (v < acc[t * nr + r - 1] || v < acc[t * nr + r + 1]) continue; // local max in rho
-      peaks.push([v, t, r]);
+      if (np === PK && v <= pv[PK - 1]) continue;
+      let j = np < PK ? np : PK - 1;                 // insertion keeps pv descending
+      while (j > 0 && pv[j - 1] < v) { pv[j] = pv[j - 1]; pt[j] = pt[j - 1]; pr[j] = pr[j - 1]; j--; }
+      pv[j] = v; pt[j] = t; pr[j] = r;
+      if (np < PK) np++;
     }
   }
-  if (!peaks.length) return finish(null);
-  peaks.sort((a, b) => b[0] - a[0]);
+  if (!np) return finish(null);
 
   // Diverse top-24: one strong blob votes at EVERY theta, so without suppression the
   // whole candidate list is 24 near-copies of the same clutter line and the real
   // blade never gets scored at all. Greedily skip peaks too close in (theta, rho) to
   // one already taken.
   const chosen = [];
-  for (const p of peaks) {
+  for (let k = 0; k < np; k++) {
     let dup = false;
     for (const q of chosen) {
-      if (sameLine(p[1], p[2], q[1], q[2], rho0, 3, 7)) { dup = true; break; }
+      if (sameLine(pt[k], pr[k], q[1], q[2], rho0, 3, 7)) { dup = true; break; }
     }
-    if (!dup) { chosen.push(p); if (chosen.length >= 24) break; }
+    if (!dup) { chosen.push([pv[k], pt[k], pr[k]]); if (chosen.length >= 24) break; }
   }
 
   // The locked line is always scored, even if its Hough peak fell out of the top-24 —
   // hysteresis is worthless if the incumbent never stands for re-election.
-  const L = model.lock;
   if (L) {
     let has = false;
     for (const q of chosen) if (sameLine(q[1], q[2], L.t, L.r, rho0, 3, 8)) { has = true; break; }
@@ -388,6 +459,17 @@ export function detect(pixels, SW, SH, model, prev) {
     // clutter into a phantom "long bar" (the exact long spurious collinear chains
     // measured on the live camera) — and POLARITY-CONSISTENT: one object is a dark
     // valley or a bright ridge along its whole length, never a mix.
+    // walk only the on-frame span of the line, not the full +-(SW+SH)
+    let tA = -lim, tB = lim;
+    if (Math.abs(ux) > 1e-6) {
+      const a = (0 - px0) / ux, b2 = (SW - 1 - px0) / ux;
+      tA = Math.max(tA, Math.min(a, b2)); tB = Math.min(tB, Math.max(a, b2));
+    } else if (px0 < 0 || px0 > SW - 1) continue;
+    if (Math.abs(uy) > 1e-6) {
+      const a = (0 - py0) / uy, b2 = (SH - 1 - py0) / uy;
+      tA = Math.max(tA, Math.min(a, b2)); tB = Math.min(tB, Math.max(a, b2));
+    } else if (py0 < 0 || py0 > SH - 1) continue;
+    if (tB < tA) continue;
     const close = () => {
       if (supN < 0.4 * (last - runA + 1)) return;
       // 0.62, not higher: a real blade tracks ~2/3 dominance when a bright sliver
@@ -408,7 +490,7 @@ export function detect(pixels, SW, SH, model, prev) {
         bestTaint = taint; bestA = runA; bestB = last;
       }
     };
-    for (let t = -lim; t <= lim; t++) {
+    for (let t = Math.ceil(tA), tE = Math.floor(tB); t <= tE; t++) {
       const x = px0 + ux * t, y = py0 + uy * t;
       if (x < 0 || y < 0 || x >= SW || y >= SH) { if (runA !== null) { close(); runA = null; } continue; }
       let sup = 0, th = 0, m = 0, emax = 0, epol = 0, eraw = 0;
@@ -549,6 +631,7 @@ export function detect(pixels, SW, SH, model, prev) {
   if (best.onLock) {
     const d2 = (p, q) => (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2;
     if (d2(m0, L.e0) + d2(m1, L.e1) > d2(m1, L.e0) + d2(m0, L.e1)) { const t2 = m0; m0 = m1; m1 = t2; }
+    L.vel = Math.sqrt(Math.max(d2(m0, L.e0), d2(m1, L.e1)));
     // A measured run SHORTER along the same axis is usually occlusion or a contrast
     // hole, not the sword shrinking — the base end was teleporting 15-20px as the
     // lower half's marginal support flickered in and out. Coast inward slowly;
@@ -578,7 +661,7 @@ export function detect(pixels, SW, SH, model, prev) {
     if (!coast(L.e1, m1)) pull(L.e1, m1);
     L.t = best.bt; L.r = best.br; L.miss = 0; L.age++;
   } else {
-    model.lock = { t: best.bt, r: best.br, e0: m0.slice(), e1: m1.slice(), miss: 0, age: 1 };
+    model.lock = { t: best.bt, r: best.br, e0: m0.slice(), e1: m1.slice(), miss: 0, age: 1, vel: 9 };
   }
 
   const K = model.lock;
