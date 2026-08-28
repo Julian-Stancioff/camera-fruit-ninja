@@ -41,7 +41,7 @@ let readyGate = null, readyResult = null; // hand-confirmation gate before a mat
 // — timer, music, pause, replay — works untouched; only the blade's source changes.
 let bladeMode = "hand";          // "hand" | "object"
 const objectBlade = new ObjectBlade();
-let katGate = null, katCand = null, katResult = null;
+let katGate = null, katCand = null;
 let bladeLine = null;            // {grip, tip} in screen px, object mode only
 let bladeSamplesPrev = null;     // previous frame's sample points along the blade
 let paused = false, pauseStart = 0;       // pause / quit-to-menu
@@ -183,7 +183,6 @@ function bladeSamples({ grip, tip }) {
   }
   return out;
 }
-const angleDelta = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 
 // ---------- music helpers (separate menu / in-game volumes) ----------
 const menuVol = () => { const v = parseFloat(localStorage.getItem("fn_menu_vol") ?? "0.7"); return isNaN(v) ? 0.7 : v; };
@@ -710,17 +709,18 @@ function startKatana() {
 $("mode-katana").addEventListener("click", startKatana);
 
 function enterKatana() {
-  katGate = { steadySince: 0, locked: false };
-  katCand = null; katResult = null;
+  katGate = { locked: false };
+  katCand = null;
   const p = video.play && video.play();
   if (p && p.catch) p.catch(() => {});
   $("webcam").classList.remove("pip-left", "cam-off");
   $("webcam").classList.add("cam-ready");
   $("webcam2").hidden = true;
   overlay.classList.add("overlay-top");
+  objectBlade.rescan();
   $("kat-actions").hidden = true;
-  $("kat-status").textContent = "Hold your blade up \u2694";
-  $("kat-sub").textContent = "Keep the hand gripping it in view";
+  $("kat-status").textContent = "Wave your blade \u2694";
+  $("kat-sub").textContent = "Swing it side to side so we can pick it out";
   $("katana-screen").hidden = false;
 }
 
@@ -733,41 +733,34 @@ function exitKatana() {
 }
 
 function katanaTick(now) {
-  if (video.readyState >= 2) katResult = tracker.detect(video, now);
-  const lm = katResult?.allLandmarks?.[0] || null;
-
-  if (!katGate.locked) {
-    const cand = lm ? objectBlade.scan(video, lm) : null;
-    // A detection has to agree with the previous frame for ~0.5s before we offer it, so
-    // a single fluke frame is never what you end up approving.
-    if (cand && katCand && Math.abs(angleDelta(cand.angle, katCand.angle)) < 0.25) {
-      if (!katGate.steadySince) katGate.steadySince = now;
-    } else katGate.steadySince = 0;
-    katCand = cand;
-    if (cand && katGate.steadySince && now - katGate.steadySince > 500) {
+  if (!katGate.locked && video.readyState >= 2) {
+    // scan() buffers frames and only commits once it has seen enough movement — the
+    // wave is what separates the blade from every other long edge in the room.
+    const cand = objectBlade.scan(video);
+    if (cand) {
+      katCand = cand;
       katGate.locked = true;
       $("kat-status").textContent = "Found it \u2014 is this your blade?";
-      $("kat-sub").textContent = "The line should run from your grip to the tip";
+      $("kat-sub").textContent = "The line should sit along the whole blade";
       $("kat-actions").hidden = false;
-    } else if (!lm) $("kat-sub").textContent = "Show the hand holding it";
-    else if (!cand) $("kat-sub").textContent = "Hold it out clear of your body";
+    } else {
+      const pct = Math.round(objectBlade.scanProgress * 100);
+      $("kat-sub").textContent = pct < 100
+        ? `Keep waving\u2026 ${pct}%`
+        : "Nothing long enough found \u2014 try a clearer background";
+    }
   }
 
   octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-  if (lm) drawKatanaPreview(lm, katCand);
+  drawKatanaPreview(katCand);
 }
 
-function drawKatanaPreview(lm, cand) {
+function drawKatanaPreview(cand) {
   const rect = video.getBoundingClientRect();
   if (rect.width < 4) return;
   const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
   octx.save();
   octx.lineCap = "round";
-  octx.strokeStyle = "rgba(255,236,180,0.5)"; octx.lineWidth = 2;
-  for (const [a, b] of HAND_CONNECTIONS) {
-    const pa = mapToCam(lm[a].x, lm[a].y, rect, vw, vh), pb = mapToCam(lm[b].x, lm[b].y, rect, vw, vh);
-    octx.beginPath(); octx.moveTo(pa.x, pa.y); octx.lineTo(pb.x, pb.y); octx.stroke();
-  }
   if (cand) {
     const g = mapToCam(cand.gripNorm.x, cand.gripNorm.y, rect, vw, vh);
     const t = mapToCam(cand.tipNorm.x, cand.tipNorm.y, rect, vw, vh);
@@ -787,10 +780,11 @@ $("kat-accept").addEventListener("click", () => {
   startSolo();
 });
 $("kat-deny").addEventListener("click", () => {
-  katGate.locked = false; katGate.steadySince = 0; katCand = null;
+  katGate.locked = false; katCand = null;
+  objectBlade.rescan();
   $("kat-actions").hidden = true;
-  $("kat-status").textContent = "Try again \u2694";
-  $("kat-sub").textContent = "Turn it a little, or hold it against a clearer background";
+  $("kat-status").textContent = "Wave it again \u2694";
+  $("kat-sub").textContent = "Try a clearer background, or bigger swings";
 });
 $("kat-skip").addEventListener("click", () => {
   bladeMode = "hand";
@@ -911,6 +905,40 @@ function tick(now) {
     const freq = dtMs > 0 ? 1000 / dtMs : 30;
     lastDetectTs = now;
 
+    if (bladeMode === "object") {
+      // Katana mode watches the OBJECT and nothing else — the hand model never runs,
+      // which also hands the frame back the ~10ms MediaPipe was costing. mainLock is
+      // reused purely as presence bookkeeping so the lost-hint and the fruit slowdown
+      // keep working unchanged; it holds no landmarks here.
+      const ob = objectBlade.update(video, dtMs);
+      updateLock(mainLock, ob ? { x: ob.gripNorm.x, y: ob.gripNorm.y, lm: null } : null);
+      if (ob) {
+        const raw = mapPoint(ob.gripNorm.x, ob.gripNorm.y);
+        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladeSamplesPrev = null; }
+        misses = 0;
+        const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
+        bladeLine = bladeFrom(cur, ob.angle);
+        const samples = bladeSamples(bladeLine);
+        // One segment per point along the blade — Game gates each on its own speed.
+        if (bladeSamplesPrev) {
+          segment = samples.map((b, i) =>
+            ({ a: bladeSamplesPrev[i], b, speed: bladeSpeed(bladeSamplesPrev[i], b, dtMs) }));
+        }
+        bladeSamplesPrev = samples;
+        trail.push({ x: bladeLine.tip.x, y: bladeLine.tip.y, t: now });
+        bladePrev = cur; bladeCur = cur;
+      } else {
+        misses++;
+        if (misses <= COAST_FRAMES && bladeLine) trail.push({ x: bladeLine.tip.x, y: bladeLine.tip.y, t: now });
+        else {
+          cursorFX.reset(); cursorFY.reset();
+          bladePrev = null; bladeCur = null;
+          bladeLine = null; bladeSamplesPrev = null;
+        }
+      }
+      updateHandHint(now);
+      lastResult = { present: false, landmarks: [] }; // nothing to draw a skeleton from
+    } else {
     const result = injectedResult || tracker.detect(video, now);
     if (DEBUG) updateHud(result, now);
     lastResult = result;
@@ -923,31 +951,15 @@ function tick(now) {
       updateLock(mainLock, blade);
       if (blade) {
         lastRawBlade = blade;
-        // Object mode anchors on the palm and takes its direction from the tracked
-        // object; hand mode keeps the index fingertip as a single point.
-        const ob = bladeMode === "object" ? objectBlade.update(video, mainLock.landmarks, dtMs) : null;
-        const src = ob ? ob.gripNorm : blade;
-        const raw = mapPoint(src.x, src.y);
+        const raw = mapPoint(blade.x, blade.y);
         // Reacquire after a multi-frame gap: snap the filter to the new point and
         // don't form a slice segment this frame (avoids a ghost slice across the gap).
-        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; bladeSamplesPrev = null; }
+        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; }
         misses = 0;
         // Smooth in pixel space: clean cursor → clean slice segments → reliable cuts.
         const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
-        if (ob) {
-          bladeLine = bladeFrom(cur, ob.angle);
-          const samples = bladeSamples(bladeLine);
-          // One segment per point along the blade — Game gates each on its own speed.
-          if (bladeSamplesPrev) {
-            segment = samples.map((b, i) =>
-              ({ a: bladeSamplesPrev[i], b, speed: bladeSpeed(bladeSamplesPrev[i], b, dtMs) }));
-          }
-          bladeSamplesPrev = samples;
-          trail.push({ x: bladeLine.tip.x, y: bladeLine.tip.y, t: now });
-        } else {
-          if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
-          trail.push({ x: cur.x, y: cur.y, t: now });
-        }
+        if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
+        trail.push({ x: cur.x, y: cur.y, t: now });
         bladePrev = cur; bladeCur = cur; lastHandTs = now;
         // Versus: stream our fingertip to the opponent (~20Hz), normalized.
         if (mode === "versus" && netGame?.playing && socket && now - lastBladeEmit > 50) {
@@ -958,16 +970,15 @@ function tick(now) {
         // coast through brief MediaPipe dropouts instead of dropping the blade.
         misses++;
         if (misses <= COAST_FRAMES && bladeCur) {
-          const p = bladeLine ? bladeLine.tip : bladeCur;
-          trail.push({ x: p.x, y: p.y, t: now });
+          trail.push({ x: bladeCur.x, y: bladeCur.y, t: now });
         } else {
           cursorFX.reset(); cursorFY.reset();
           bladePrev = null; bladeCur = null;
-          bladeLine = null; bladeSamplesPrev = null;
         }
       }
     }
     updateHandHint(now);
+    }
   }
   while (trail.length && now - trail[0].t > TRAIL_MS) trail.shift();
 
@@ -1017,6 +1028,7 @@ function updateHandHint() {
   } else {
     $("hand-hint-l").classList.remove("show");
     $("hand-hint-r").classList.remove("show");
+    $("hand-hint").textContent = bladeMode === "object" ? "⚔ Bring your blade back" : "✋ Bring your hand back";
     $("hand-hint").classList.toggle("show", inActiveGame() && mainLock.lost);
   }
 }
