@@ -20,3 +20,12 @@ assert.deepStrictEqual(pairEnds(now, before), [1, 0]);
 assert.deepStrictEqual(pairEnds([[5, 5], [5, 5]], [[5, 5], [5, 5]]), [0, 1]);
 
 console.log("ObjectBlade: pairEnds OK");
+// clampStep bounds one frame's endpoint step, so a single bad detection cannot fling the
+// blade across the screen while we are coasting on velocity.
+import { clampStep } from "./ObjectBlade.js";
+assert.strictEqual(clampStep(5), 5);
+assert.strictEqual(clampStep(-5), -5);
+assert.strictEqual(clampStep(900), 26);
+assert.strictEqual(clampStep(-900), -26);
+console.log("ObjectBlade: clampStep OK");
+
