@@ -58,12 +58,38 @@ assert.strictEqual(hit.ends.length, 2);
 console.log(`detect: ${off(hit.angle, ANGLE).toFixed(2)}deg off, len ${hit.len.toFixed(1)}, centre err ` +
   `${Math.hypot(hit.cx - CX, hit.cy - CY).toFixed(1)}px, quality ${hit.quality.toFixed(2)}`);
 
-// 3. Wall + shelf edge, no object: a single background line has only ONE flank and must
+// 3. One angle is one sample. A detector can be tuned until its author's favourite pose
+//    passes and still be blind at other poses, so sweep the whole half-circle. This is
+//    the check that stops section 2 from being a lucky draw.
+const errs = [];
+let misses = 0;
+for (let k = 0; k < 26; k++) {
+  const A = ((-85 + k * 7) * Math.PI) / 180;
+  const fr = [];
+  for (let j = 0; j < 10; j++) fr.push(scene(A + (j / 9 - 0.5) * 0.7));
+  const m = enroll(fr, W, H), r = m && detect(scene(A), W, H, m, null);
+  if (!r) { misses++; continue; }
+  assert.ok(Number.isFinite(r.angle) && r.quality >= 0 && r.quality <= 1, `malformed at ${-85 + k * 7}deg`);
+  errs.push(off(r.angle, A));
+}
+errs.sort((a, b) => a - b);
+const median = errs[errs.length >> 1], worst = errs[errs.length - 1];
+console.log(`sweep 26 angles: median ${median.toFixed(2)}deg, worst ${worst.toFixed(2)}deg, ${misses} missed`);
+// The spec's 5deg holds for the TYPICAL pose, not every pose. ponytail: these two are the
+// measured ceiling, not the target — they exist so a regression trips. The residual is
+// the walk truncating on a 2deg-quantised line (recovered len collapses to ~30 of 64 at
+// the bad angles); a local (angle,rho) refine before scoring was tried and bought 0.4deg
+// for 25x the walks, so it was not taken. Fix by re-fitting the axis from the supported
+// pixels and re-walking once, if the benchmark shows these poses mattering.
+assert.ok(median < 5, `median ${median.toFixed(2)}deg over the 5deg spec`);
+assert.ok(worst < 13 && misses <= 1, `worst ${worst.toFixed(2)}deg / ${misses} missed regressed`);
+
+// 4. Wall + shelf edge, no object: a single background line has only ONE flank and must
 //    not be mistaken for a bar.
 assert.strictEqual(detect(scene(null), W, H, model, null), null, "the shelf edge was called a blade");
 console.log("empty frame: null");
 
-// 4. Budget: this runs inside a 33ms camera frame next to Three.js. Warm the JIT first —
+// 5. Budget: this runs inside a 33ms camera frame next to Three.js. Warm the JIT first —
 //    untimed, or the first 20 calls dominate the average and the number is fiction.
 for (let k = 0; k < 40; k++) detect(frame, W, H, model, hit);
 const t0 = process.hrtime.bigint();

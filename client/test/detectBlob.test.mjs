@@ -2,10 +2,9 @@
 // No framework. The scene is built the way a camera sees one: a smooth lit wall, a
 // blade lit unevenly along its length, and a FAT arm blob that also moves — enrolment
 // has to reject the arm on shape, which is the whole point of ranking by elongation.
-// The wall's grain is re-rolled every frame. That matters more than it looks: with a
-// frozen wall the motion accumulator is exactly 0 everywhere nothing moved, which is
-// the one input on which ANY motion threshold works. A real sensor never gives you
-// that, so a frozen wall silently exempts enrolment from the only hard part.
+// The wall's grain is re-rolled every frame, which matters more than it looks: a frozen
+// wall zeroes the motion accumulator everywhere nothing moved, the one input on which
+// ANY threshold works. Freezing it exempts enrolment from the only hard part.
 import assert from "node:assert";
 import { NAME, enroll, detect } from "../src/tracking/detectBlob.js";
 
@@ -70,8 +69,7 @@ console.log(`${NAME}: tracked ${degOff(nxt.angle, -0.5).toFixed(2)}° off, quali
 assert.strictEqual(detect(frame(0, false), W, H, model, hit), null, "a blank wall was called a blade");
 console.log(`${NAME}: empty frame -> null`);
 
-// 4b. Nothing was ever waved: a take of pure sensor grain must enrol to null, not to
-// a model of the noise. This is the guard that a threshold keyed to the grain needs.
+// 4b. Nothing waved: a take of pure grain must enrol to null, not to a model of noise.
 assert.strictEqual(enroll(ANGLES.map(() => frame(0, false)), W, H), null, "enrolled on noise");
 console.log(`${NAME}: still noisy take -> enroll null`);
 

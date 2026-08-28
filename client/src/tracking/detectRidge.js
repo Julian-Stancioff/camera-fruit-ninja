@@ -50,14 +50,20 @@ const wrapHalf = (a) => {
 let S = null;
 function scratch(SW, SH) {
   if (S && S.SW === SW && S.SH === SH) return S;
-  const N = SW * SH, NR = SW + SH + 5;
+  // ρ = y·cosθ − x·sinθ with θ in [0,π), so sinθ ≥ 0 and the −x·sinθ term only ever
+  // subtracts: ρ runs from −hypot(SW,SH) up to +SH, NOT the symmetric range it looks
+  // like. Sizing the row to SW+SH sent bottom-right votes at θ≈120° to a negative index,
+  // which silently landed in the PREVIOUS angle row — hundreds of corrupted votes a
+  // frame. RHO0 must clear the full diagonal; the margin covers the ±hHi flank probes.
+  const N = SW * SH, RHO0 = Math.ceil(Math.hypot(SW, SH)) + H_MAX + 3;
+  const NR = RHO0 + SH + H_MAX + 3;
   const cos = new Float32Array(NA), sin = new Float32Array(NA);
   for (let a = 0; a < NA; a++) {
     const t = (a * Math.PI) / NA;
     cos[a] = Math.cos(t); sin[a] = Math.sin(t);
   }
   S = {
-    SW, SH, NR, RHO0: SW + 2, cos, sin,
+    SW, SH, NR, RHO0, cos, sin,
     lum: new Uint8Array(N), gx: new Int16Array(N), gy: new Int16Array(N),
     mag: new Uint16Array(N), hist: new Uint32Array(64),
     acc: new Float32Array(NA * NR), sm: new Float32Array(NA * NR), resp: new Float32Array(NA * NR),

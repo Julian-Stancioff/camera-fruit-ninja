@@ -11,7 +11,7 @@
 // a game-feel setting in main.js, so reach stays comparable to hand mode whatever you
 // happen to be holding.
 import { OneEuroFilter } from "./OneEuroFilter.js";
-import * as detector from "./detectBlade.js";
+import * as detector from "./detectAuto.js";
 
 const SCAN_W = 192;          // scan resolution: enough structure, cheap enough for 30fps
 const BUF_FRAMES = 20;       // ~0.7s of history at 30fps feeding enrolment
@@ -34,6 +34,15 @@ export function pairEnds(ends, prevEnds) {
   const straight = d(ends[0], prevEnds[0]) + d(ends[1], prevEnds[1]);
   const crossed = d(ends[1], prevEnds[0]) + d(ends[0], prevEnds[1]);
   return crossed < straight ? [1, 0] : [0, 1];
+}
+
+// You hold a sword below its tip, so the grip is the LOWER end on screen. The 6px
+// margin is hysteresis: without it the two ends trade places every frame the moment the
+// blade swings through horizontal.
+function hiltEnd(ends, current) {
+  const [a, b] = ends;
+  if (Math.abs(a[1] - b[1]) < 6) return current;
+  return a[1] > b[1] ? 0 : 1;
 }
 
 export class ObjectBlade {
@@ -100,75 +109,32 @@ export class ObjectBlade {
   }
 
   /**
-   * Called every frame while the enrolment screen is up. Buffers frames and only
-   * commits once it has seen enough movement, then hands back a candidate to Approve
-   * or Deny. Returns null while still gathering.
+   * Called every frame while the enrolment screen is up. The filter needs no training,
+   * so this just waits for the same bar to be found a few frames running and hands it
+   * straight back — no wave, no enrolment step.
    */
   scan(video) {
     const f = this._grab(video);
     if (!f) return null;
+    if (!this.model) this.model = detector.enroll([f.pixels], f.SW, f.SH);
+    const hit = detector.detect(f.pixels, f.SW, f.SH, this.model, this.prev);
+    this.prev = hit;
+    if (!hit) { this.stable = 0; return null; }
+    this.stable = (this.stable || 0) + 1;
+    if (this.stable < 3) return null;
 
-    this.motion += this._motionSince(f.pixels);
-    this.lastFrame = f.pixels;
-    this.buf.push(f.pixels);
-    if (this.buf.length > BUF_FRAMES) this.buf.shift();
-    if (this.buf.length < MIN_FRAMES || this.motion < MOTION_TARGET) return null;
-
-    const model = detector.enroll(this.buf, f.SW, f.SH);
-    if (!model) {
-      // Nothing object-like in that wave. Keep the frames but reset the motion budget
-      // so the next second of waving gets a fresh attempt rather than retrying every
-      // frame against the same failed buffer.
-      this.motion = 0;
-      this.failed = true;
-      return null;
-    }
-    const hit = detector.detect(f.pixels, f.SW, f.SH, model, null);
-    if (!hit) { this.motion = 0; this.failed = true; return null; }
-
-    // Which end is the grip? The end that moves least — a swing pivots about the hand.
-    // Measured across the wave we just recorded, which is exactly the motion that
-    // makes the answer visible.
-    const hilt = this._hiltFromWave(model, f.SW, f.SH, hit);
+    const hilt = hiltEnd(hit.ends, 0);
     const tip = 1 - hilt;
     return {
-      model,
-      ends: hit.ends,
-      hilt,
-      quality: hit.quality,
+      model: null, ends: hit.ends, hilt, quality: hit.quality,
       angle: Math.atan2(hit.ends[tip][1] - hit.ends[hilt][1], hit.ends[tip][0] - hit.ends[hilt][0]),
       gripNorm: { x: hit.ends[hilt][0] / f.SW, y: hit.ends[hilt][1] / f.SH },
       tipNorm: { x: hit.ends[tip][0] / f.SW, y: hit.ends[tip][1] / f.SH },
     };
   }
 
-  // Replay the buffered wave and total how far each endpoint travelled. The pivot end
-  // is the grip. Falls back to end 0 if the replay is too sparse to call.
-  _hiltFromWave(model, SW, SH, last) {
-    let prev = null, prevEnds = null;
-    const travel = [0, 0];
-    for (const px of this.buf) {
-      const r = detector.detect(px, SW, SH, model, prev);
-      if (!r) continue;
-      if (prevEnds) {
-        const [i0, i1] = pairEnds(r.ends, prevEnds);
-        travel[0] += Math.hypot(r.ends[i0][0] - prevEnds[0][0], r.ends[i0][1] - prevEnds[0][1]);
-        travel[1] += Math.hypot(r.ends[i1][0] - prevEnds[1][0], r.ends[i1][1] - prevEnds[1][1]);
-        prevEnds = [r.ends[i0], r.ends[i1]];
-      } else prevEnds = r.ends;
-      prev = r;
-    }
-    if (!prevEnds || travel[0] === travel[1]) return 0;
-    // prevEnds is in the buffer's own ordering; carry that ordering onto `last`.
-    const [j0] = pairEnds(last.ends, prevEnds);
-    const hiltInBuf = travel[0] <= travel[1] ? 0 : 1;
-    return hiltInBuf === 0 ? j0 : 1 - j0;
-  }
-
   accept(candidate) {
     if (!candidate) return;
-    this.model = candidate.model;
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(this.model)); } catch { /* no storage — just won't persist */ }
     this.reset();
     // Seed tracking with the pose you approved, so the very first frame already knows
     // which end is the grip instead of re-deriving it.
@@ -176,16 +142,9 @@ export class ObjectBlade {
     this.hilt = candidate.hilt;
   }
 
-  load() {
-    try {
-      const m = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
-      if (!m) return false;
-      this.model = m;
-      return true;
-    } catch { return false; }
-  }
+  load() { return false; } // the filter needs no training, so there is nothing to restore
 
-  get calibrated() { return !!this.model; }
+  get calibrated() { return true; }
 
   /**
    * Per game frame. Null means the object is not visible — main.js coasts for a few
@@ -194,9 +153,9 @@ export class ObjectBlade {
    * @returns {{gripNorm:{x,y}, angle, conf}|null}
    */
   update(video, dtMs) {
-    if (!this.model) return null;
     const f = this._grab(video);
     if (!f) return null;
+    if (!this.model) this.model = detector.enroll([f.pixels], f.SW, f.SH);
     const hit = detector.detect(f.pixels, f.SW, f.SH, this.model, this.prev);
     if (!hit) { this.prev = null; return null; }
 
@@ -204,15 +163,8 @@ export class ObjectBlade {
     if (this.prevEnds) {
       const [i0, i1] = pairEnds(ends, this.prevEnds);
       ends = [ends[i0], ends[i1]];
-      // Track how much each end moves. The grip is the quiet one; requiring a clear
-      // margin before flipping stops the blade inverting on a frame of noise.
-      for (let k = 0; k < 2; k++) {
-        const d = Math.hypot(ends[k][0] - this.prevEnds[k][0], ends[k][1] - this.prevEnds[k][1]);
-        this.speed[k] += (d - this.speed[k]) * 0.15;
-      }
-      const other = 1 - this.hilt;
-      if (this.speed[other] < this.speed[this.hilt] * SWAP_MARGIN) this.hilt = other;
     }
+    this.hilt = hiltEnd(ends, this.hilt);
     this.prevEnds = ends;
     this.prev = hit;
 
