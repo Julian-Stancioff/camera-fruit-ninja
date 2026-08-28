@@ -262,13 +262,29 @@ export function scenes() {
       track: path(-10, 20, [150, 54], [172, 50], 96),
     }),
 
-    // 7. No object at all, in the busiest room we have. Truth is null on every frame:
-    //    a detector that hallucinates here is worse than one that misses.
+    // 7. No object at all, in the busiest room we have — nothing to enrol on either.
+    //    Truth is null on every frame: a detector that hallucinates here is worse than
+    //    one that misses.
     build({
       name: "empty", seed: 707,
       bg: (p, r, f) => { shelf(p, r, f); torso(p, 96, 100, 60, 45, [72, 40, 46]); },
       draw: () => {},
       wave: null,
+      track: null,
+    }),
+
+    // 8. The object-gone case, and the one that actually exercises the FP column. Scene
+    //    7 lets a detector pass for free: enrolling on an objectless room returns a null
+    //    model and detect() short-circuits without ever looking at a pixel. Here the
+    //    player enrols the sword in this room and THEN lowers it out of shot, so the
+    //    model is real and the detector has to face a room full of decoy lines holding a
+    //    valid katana model and still say "not here". That is the frame where a latched
+    //    bookshelf spine becomes a sword swing the player never made.
+    build({
+      name: "object-gone", seed: 808,
+      bg: (p, r, f) => { shelf(p, r, f); torso(p, 96, 100, 60, 45, [72, 40, 46]); },
+      draw: sweepSpec((ph) => steelReflect(ph, 118)),
+      wave: path(-65, 20, [82, 56], [108, 50], 78),
       track: null,
     }),
   ];

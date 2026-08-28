@@ -2,6 +2,10 @@
 // No framework. The scene is built the way a camera sees one: a smooth lit wall, a
 // blade lit unevenly along its length, and a FAT arm blob that also moves — enrolment
 // has to reject the arm on shape, which is the whole point of ranking by elongation.
+// The wall's grain is re-rolled every frame. That matters more than it looks: with a
+// frozen wall the motion accumulator is exactly 0 everywhere nothing moved, which is
+// the one input on which ANY motion threshold works. A real sensor never gives you
+// that, so a frozen wall silently exempts enrolment from the only hard part.
 import assert from "node:assert";
 import { NAME, enroll, detect } from "../src/tracking/detectBlob.js";
 
@@ -16,8 +20,9 @@ const put = (p, x, y, r, g, b) => {
   p[i] = r; p[i + 1] = g; p[i + 2] = b; p[i + 3] = 255;
 };
 
+let shot = 0; // advances per frame so the sensor grain is temporal, not painted on
 function frame(a, bar = true) {
-  seed = 7;
+  seed = 7 + 101 * shot++;
   const p = new Uint8ClampedArray(W * H * 4);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const v = 55 + x * 0.3 + y * 0.45 + rnd() * 10;
@@ -64,6 +69,11 @@ console.log(`${NAME}: tracked ${degOff(nxt.angle, -0.5).toFixed(2)}° off, quali
 // 4. Bare wall — no object present — must be null, not a stretch of wall.
 assert.strictEqual(detect(frame(0, false), W, H, model, hit), null, "a blank wall was called a blade");
 console.log(`${NAME}: empty frame -> null`);
+
+// 4b. Nothing was ever waved: a take of pure sensor grain must enrol to null, not to
+// a model of the noise. This is the guard that a threshold keyed to the grain needs.
+assert.strictEqual(enroll(ANGLES.map(() => frame(0, false)), W, H), null, "enrolled on noise");
+console.log(`${NAME}: still noisy take -> enroll null`);
 
 // 5. Budget. Warm and best-of-5: in a running game the JIT has long since settled,
 // and on a shared laptop the fastest batch is the least contaminated estimate.

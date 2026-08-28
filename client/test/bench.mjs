@@ -23,8 +23,10 @@ function axisErr(a, b) {
   return d > 90 ? 180 - d : d;
 }
 
+// quality is part of the contract, so a result missing it is malformed, not a detection.
 const ok = (r) => r && [r.cx, r.cy, r.angle, r.len].every(Number.isFinite) &&
-  Array.isArray(r.ends) && r.ends.length === 2 && r.ends.flat().every(Number.isFinite);
+  Array.isArray(r.ends) && r.ends.length === 2 && r.ends.flat().every(Number.isFinite) &&
+  r.quality >= 0 && r.quality <= 1;
 
 const detectors = [];
 for (const [id, rel] of CANDIDATES) {
@@ -76,9 +78,12 @@ for (const sc of all) {
       try { r = d.m.detect(sc.frames[k], sc.SW, sc.SH, model, prev); } catch (e) { err++; }
       ms.push(Number(process.hrtime.bigint() - s) / 1e6);
       if (r && !ok(r)) err++;   // a malformed result is a bug, not a detection
+      // prev is whatever the caller last accepted, and the caller accepts anything
+      // well-formed — including a hallucination. Threading it only on frames where truth
+      // happens to exist would hand a latching detector a free reset every empty frame.
+      if (ok(r)) prev = r;
       if (!truth) { if (r) fp++; continue; }          // any non-null here is a false positive
       if (!ok(r)) { miss++; continue; }
-      prev = r;                                        // contract: prev is the last ACCEPTED result
       ang.push(axisErr(r.angle, truth.angle));
       lenPct.push((100 * Math.abs(r.len - truth.len)) / truth.len);
       const tc = [(truth.ends[0][0] + truth.ends[1][0]) / 2, (truth.ends[0][1] + truth.ends[1][1]) / 2];

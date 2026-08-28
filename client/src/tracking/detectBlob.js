@@ -25,6 +25,9 @@ const MAX_COVER = 0.25;   // mask share above which the colour model is discrimi
                           // nothing and the answer is "don't know", not a guess
 const SCORE_MIN = 0.18;   // below this the best candidate is not the object
 const MOVE_FLOOR = 40;    // summed L1 RGB motion a pixel must show to count as moved
+const MOVE_K = 6;         // how many IQRs above the still-background accumulator a
+                          // pixel must sit to be called moving — the camera-scaling
+                          // knob, raise it if a grainy sensor enrols its own noise
 const DEV_FLOOR = 24;     // L1 RGB gap from the background that means "object is HERE"
 const MED_N = 9;          // frames sampled for the per-pixel background median
 
@@ -148,9 +151,13 @@ export function enroll(frames, SW, SH) {
   if (!frames || frames.length < 2) return null;
   const n = SW * SH;
 
-  // What moved over the take. Summed inter-frame L1, thresholded against the
-  // accumulator's own median — that median IS the take's noise floor, so it scales
-  // with the camera and the frame count instead of being a number guessed here.
+  // What moved over the take. Summed inter-frame L1, thresholded as an OUTLIER test
+  // against the still background's own distribution: most of the frame never moves, so
+  // its median is the sensor's churn and its IQR is the width of that churn. A multiple
+  // of the median alone will not do — on a clean take the median is exactly 0, so any
+  // multiple of it collapses to MOVE_FLOOR and the scaling is never exercised, and on a
+  // grainy one the median sits high enough that a multiple lands ABOVE the object and
+  // eats half the blade. It is the spread that scales with the camera, not the level.
   const acc = new Float32Array(n);
   for (let f = 1; f < frames.length; f++) {
     const cur = frames[f], prv = frames[f - 1];
@@ -161,7 +168,10 @@ export function enroll(frames, SW, SH) {
   const samp = [];
   for (let p = 0; p < n; p += 7) samp.push(acc[p]);
   samp.sort((a, b) => a - b);
-  const moveThr = Math.max(MOVE_FLOOR, 6 * samp[samp.length >> 1]);
+  const moveThr = Math.max(
+    MOVE_FLOOR,
+    samp[samp.length >> 1] + MOVE_K * (samp[(samp.length * 3) >> 2] - samp[samp.length >> 2]),
+  );
 
   // The room, per pixel: the MEDIAN over a spread of frames, not the mean. A mean is
   // dragged bright wherever the blade passed, and then the wall itself looks like a

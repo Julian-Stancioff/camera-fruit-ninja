@@ -1105,7 +1105,13 @@ function drawOverlay(now) {
   if (showSkeleton && lastResult.present) drawSkeleton(lastResult.landmarks);
   if (mode === "versus") drawOppTrail(now);
   drawTrail(now);
-  if (bladeMode === "object" && bladeLine) drawBlade(); else drawTip();
+  if (bladeMode === "object" && bladeLine) {
+    // Same white fingertip light as hand mode, one per cutting point along the blade —
+    // biggest at the tip so it reads as a blade rather than a row of dots.
+    const pts = bladeSamples(bladeLine);
+    for (let i = 0; i < pts.length - 1; i++) drawTip(pts[i], 5 + i);
+    drawTip(bladeLine.tip, 11);
+  } else drawTip(bladeCur);
   // Whole-hand mapping on the camera PiP — see the tracking stay locked on your hand.
   if (inActiveGame() && mainLock.present && mainLock.landmarks)
     drawHandOnPip(mainLock.landmarks, $("webcam"), "rgba(255,236,180,0.7)", "#ffd24a");
@@ -1208,29 +1214,12 @@ function drawTrail(now) {
   octx.restore();
 }
 
-// The sword itself: a bright bar from the grip to the tip, with the cutting stretch
-// (mid-shaft up) glowing brighter than the hilt so you can see what actually slices.
-function drawBlade() {
-  const { grip, tip } = bladeLine;
-  const mid = { x: grip.x + (tip.x - grip.x) * BLADE_T0, y: grip.y + (tip.y - grip.y) * BLADE_T0 };
-  octx.save();
-  octx.lineCap = "round";
-  octx.strokeStyle = "rgba(190, 200, 215, 0.75)"; octx.lineWidth = 7;
-  octx.beginPath(); octx.moveTo(grip.x, grip.y); octx.lineTo(mid.x, mid.y); octx.stroke();
-  octx.shadowColor = "rgba(180, 235, 255, 0.95)"; octx.shadowBlur = 22;
-  octx.strokeStyle = "rgba(240, 252, 255, 0.95)"; octx.lineWidth = 9;
-  octx.beginPath(); octx.moveTo(mid.x, mid.y); octx.lineTo(tip.x, tip.y); octx.stroke();
-  octx.fillStyle = "#fff";
-  octx.beginPath(); octx.arc(tip.x, tip.y, 7, 0, Math.PI * 2); octx.fill();
-  octx.restore();
-}
-
-function drawTip() {
-  if (!bladeCur) return;
+function drawTip(p, r = 11) {
+  if (!p) return;
   octx.save();
   octx.shadowColor = "rgba(255, 210, 74, 0.95)"; octx.shadowBlur = 26;
   octx.fillStyle = "#fff6d8";
-  octx.beginPath(); octx.arc(bladeCur.x, bladeCur.y, 11, 0, Math.PI * 2); octx.fill();
+  octx.beginPath(); octx.arc(p.x, p.y, r, 0, Math.PI * 2); octx.fill();
   octx.restore();
 }
 

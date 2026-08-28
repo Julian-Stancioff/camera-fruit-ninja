@@ -24,24 +24,42 @@ function axisContrast(p, W, H, t) {
   return best;
 }
 
-assert.strictEqual(all.length, 7, "expected 7 scenes");
+assert.strictEqual(all.length, 8, "expected 8 scenes");
 for (const s of all) {
   const px = s.SW * s.SH * 4;
   assert.strictEqual(s.truth.length, s.frames.length, `${s.name}: one truth per frame`);
   assert.ok(s.enrollFrames.length > 1, `${s.name}: enrolment needs several frames`);
   for (const f of [...s.frames, ...s.enrollFrames]) assert.strictEqual(f.length, px, `${s.name}: wrong buffer size`);
 
-  // Enrolment must show the object being WAVED: consecutive frames have to differ by
-  // far more than sensor noise, or motion is not available as a cue.
-  const a = s.enrollFrames[0], b = s.enrollFrames.at(-1);
-  let moved = 0;
-  for (let i = 0; i < px; i += 4) if (Math.abs(a[i] - b[i]) > 12) moved++;
-  if (s.name === "empty") assert.ok(moved < 60, `${s.name}: the room itself is moving (${moved} px) — furniture must hold still`);
-  else assert.ok(moved > 150, `${s.name}: enrolment frames barely move (${moved} px)`);
+  const moved = (a, b) => {
+    let n = 0;
+    for (let i = 0; i < px; i += 4) if (Math.abs(a[i] - b[i]) > 12) n++;
+    return n;
+  };
+  // Enrolment must show the object being WAVED: first and last frame have to differ by
+  // far more than sensor noise, or motion is not available as a cue. `empty` is the one
+  // scene with nothing to wave, so it is the one scene that must hold still.
+  const nothingToEnrol = s.name === "empty";
+  const em = moved(s.enrollFrames[0], s.enrollFrames.at(-1));
+  if (nothingToEnrol) assert.ok(em < 60, `${s.name}: the room itself is moving (${em} px) — furniture must hold still`);
+  else assert.ok(em > 150, `${s.name}: enrolment frames barely move (${em} px)`);
+
+  // A scene is either all-truth or all-null. bench.mjs reports false positives only for
+  // scenes with no live frames, so a half-empty scene would count FPs and never print
+  // them — the one number the whole harness exists to surface, silently dropped.
+  const nulls = s.truth.filter((t) => !t).length;
+  assert.ok(nulls === 0 || nulls === s.truth.length, `${s.name}: mixed null/non-null truth hides the FP count`);
+
+  if (nulls) {
+    // With no object in shot, only sensor noise may move — otherwise the FP test is
+    // measuring a shimmering room rather than the detector's model.
+    const tm = moved(s.frames[0], s.frames.at(-1));
+    assert.ok(tm < 60, `${s.name}: track frames move (${tm} px) with no object present`);
+    continue;
+  }
 
   for (let k = 0; k < s.frames.length; k++) {
     const t = s.truth[k];
-    if (s.name === "empty") { assert.strictEqual(t, null, "empty scene must have null truth"); continue; }
     assert.ok(t && t.len > 20, `${s.name}[${k}]: no truth`);
     for (const [x, y] of t.ends) {
       assert.ok(x >= -0.01 && y >= -0.01 && x <= s.SW - 0.99 && y <= s.SH - 0.99, `${s.name}[${k}]: truth end off-frame`);

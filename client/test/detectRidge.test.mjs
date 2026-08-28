@@ -63,10 +63,12 @@ console.log(`detect: ${off(hit.angle, ANGLE).toFixed(2)}deg off, len ${hit.len.t
 assert.strictEqual(detect(scene(null), W, H, model, null), null, "the shelf edge was called a blade");
 console.log("empty frame: null");
 
-// 4. Budget: this runs inside a 33ms camera frame next to Three.js.
+// 4. Budget: this runs inside a 33ms camera frame next to Three.js. Warm the JIT first —
+//    untimed, or the first 20 calls dominate the average and the number is fiction.
+for (let k = 0; k < 40; k++) detect(frame, W, H, model, hit);
 const t0 = process.hrtime.bigint();
-for (let k = 0; k < 60; k++) detect(frame, W, H, model, hit);
-const ms = Number(process.hrtime.bigint() - t0) / 1e6 / 60;
+for (let k = 0; k < 200; k++) detect(frame, W, H, model, hit);
+const ms = Number(process.hrtime.bigint() - t0) / 1e6 / 200;
 assert.ok(ms < 4, `${ms.toFixed(2)}ms per detect exceeds the 4ms budget`);
 console.log(`budget: ${ms.toFixed(2)}ms per detect (enroll ran once)`);
 console.log("detectRidge: OK");

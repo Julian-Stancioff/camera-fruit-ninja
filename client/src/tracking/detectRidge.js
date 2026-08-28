@@ -10,14 +10,15 @@
 // Here each edge pixel votes for the ONE axis angle perpendicular to its own gradient
 // (plus ±1 bin for noise), so 3 votes, and only the few percent of pixels that clear an
 // adaptive magnitude threshold vote at all. That is what makes atan2 affordable and
-// keeps the whole pass near 1ms at 192x108.
+// keeps the whole pass at ~0.36ms at 192x108, an order under the 4ms budget.
 //
 // Motion blur: a fast swing smears the blade over 10-20px, which both WEAKENS its edges
-// and WIDENS it. Three things keep it visible at exactly the moment the player is
-// swinging: the vote threshold is a percentile of this frame's own gradients (when
-// everything softens, the strongest structure still gets through), the flank test runs
-// at the enrolled half-width AND one bin wider, and the walk accepts flanks at 35% of
-// the enrolled edge strength. Quality drops, the blade does not disappear.
+// and WIDENS it — and that is the exact moment the player needs the blade tracked. Four
+// things keep it alive rather than one loose threshold: the vote cut is a PERCENTILE of
+// this frame's own gradients, so when everything softens the strongest structure still
+// gets through; the flank probes run from the enrolled half-width OUT to +2px; the walk
+// accepts a flank at 35% of the enrolled edge strength; and a soft edge keeps 40% of its
+// quality outright. Quality drops on a swing, the blade does not disappear.
 
 export const NAME = "ridge";
 
@@ -29,10 +30,12 @@ const MISS = 6;         // px of gap a supported run may bridge (a glint, a hand
 const H_MAX = 6;        // widest half-width tried at enrolment (12px bar at 192 wide)
 const MIN_LEN = 18;     // px: shorter than this is not a sword, it is a pen
 const MOVE_T = 7;       // luma deviation from a pixel's own temporal mean = "it moved"
-const SCAN_FRAMES = 10; // enrolment frames actually scanned (the rest only feed the mean)
+const SCAN_FRAMES = 10; // enrolment frames actually used — ~1s of camera is 30, and the
+                        // extra 20 buy nothing but a linear enrol cost
 const CONT_GAIN = 0.6;  // how much continuity with prev may outrank raw evidence
+const PEAK_FLOOR = 0.1; // fraction of the best response a candidate must reach
 const MIN_Q = 0.15;
-const CANDS = 8;
+const CANDS = 12;
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 // Axis angles are unordered (the caller decides which end is the hilt), so differences
@@ -157,7 +160,10 @@ function respond(s, hLo, hHi) {
 // bins, so peaks cannot be compared in accumulator space).
 function peaks(s, max) {
   const { resp, NR, RHO0, cos, sin, SW, SH } = s;
-  const floor = 0.35 * max, cx0 = SW / 2, cy0 = SH / 2, all = [];
+  // A long bright background line outvotes a short blade by its length alone, so the
+  // floor is deliberately low and the ranking is left to the walk, which knows the
+  // model's width and length. Cheap: a rejected candidate costs one line walk.
+  const floor = PEAK_FLOOR * max, cx0 = SW / 2, cy0 = SH / 2, all = [];
   for (let a = 0; a < NA; a++) {
     const o = a * NR;
     for (let r = 2; r < NR - 2; r++) {
@@ -167,15 +173,16 @@ function peaks(s, max) {
     }
   }
   all.sort((p, q) => q.v - p.v);
-  if (process.env.RDBG) console.log("  peaks:", all.slice(0, 10).map((p) => "a" + p.a + "/" + (p.a * 2) + "deg r" + (p.r - RHO0) + " v" + p.v.toFixed(0) + " dc" + p.dc.toFixed(0)).join(" | "));
   const out = [];
   for (const p of all) {
     if (out.length >= CANDS) break;
     let dup = false;
     for (const k of out) {
-      let da = Math.abs(p.a - k.a);
-      if (da > NA / 2) da = NA - da;
-      if (da <= 3 && Math.abs(p.dc - k.dc) <= 6) { dup = true; break; }
+      const raw = Math.abs(p.a - k.a), wrapped = raw > NA / 2;
+      const da = wrapped ? NA - raw : raw;
+      // Across the θ=0/π seam the normal flips, so the same line reports opposite dc.
+      const dd = wrapped ? Math.abs(p.dc + k.dc) : Math.abs(p.dc - k.dc);
+      if (da <= 3 && dd <= 6) { dup = true; break; }
     }
     if (!dup) out.push(p);
   }
@@ -190,7 +197,9 @@ function walk(s, a, rho, hLo, hHi, thr) {
   const ox = -rho * sn, oy = rho * c, nx = -sn, ny = c;
   const at = (x, y) => (x < 0 || y < 0 || x > SW - 1 || y > SH - 1 ? 0 : mag[((y + 0.5) | 0) * SW + ((x + 0.5) | 0)]);
   const tMax = Math.ceil(Math.hypot(SW, SH));
-  const h0 = Math.max(1, hLo - 1), h1 = hHi + 1; // ±1 of slack: blur fattens the bar
+  // Slack runs OUTWARD only. Probing inside hLo lets a 1px background line — a cable, a
+  // shelf edge — satisfy both flanks off its own single ridge and pass as a bar.
+  const h1 = hHi + 1;
   let run0 = 0, last = null, sum = 0, cnt = 0;
   let bT0 = 0, bT1 = -1, bSum = 0, bCnt = 0;
   const close = () => {
@@ -200,7 +209,7 @@ function walk(s, a, rho, hLo, hHi, thr) {
     const px = ox + t * c, py = oy + t * sn;
     if (px < 1 || py < 1 || px > SW - 2 || py > SH - 2) continue;
     let A = 0, B = 0;
-    for (let h = h0; h <= h1; h++) {
+    for (let h = hLo; h <= h1; h++) {
       const u = at(px + h * nx, py + h * ny); if (u > A) A = u;
       const w = at(px - h * nx, py - h * ny); if (w > B) B = w;
     }
@@ -224,17 +233,21 @@ function walk(s, a, rho, hLo, hHi, thr) {
 export function enroll(frames, SW, SH) {
   if (!frames || frames.length < 2) return null;
   const N = SW * SH, s = scratch(SW, SH);
+  const step = Math.max(1, Math.floor(frames.length / SCAN_FRAMES));
+  const use = [];
+  for (let k = 0; k < frames.length; k += step) use.push(frames[k]);
+  if (use.length < 2) return null;
+
   const mean = new Float32Array(N);
-  for (const f of frames) {
+  for (const f of use) {
     for (let i = 0, j = 0; i < N; i++, j += 4) mean[i] += (f[j] * 77 + f[j + 1] * 150 + f[j + 2] * 29) >> 8;
   }
-  for (let i = 0; i < N; i++) mean[i] /= frames.length;
+  for (let i = 0; i < N; i++) mean[i] /= use.length;
 
   const mask = new Uint8Array(N), total = (SW - 2) * (SH - 2);
-  const step = Math.max(1, Math.floor(frames.length / SCAN_FRAMES));
   let best = null;
-  for (let k = 0; k < frames.length; k += step) {
-    luma(frames[k], s.lum, N);
+  for (const frame of use) {
+    luma(frame, s.lum, N);
     let moving = 0;
     for (let i = 0; i < N; i++) {
       const d = s.lum[i] - mean[i];
@@ -296,7 +309,6 @@ export function detect(pixels, SW, SH, model, prev) {
       const dP = Math.hypot(g.cx - prev.cx, g.cy - prev.cy) / 30;
       sc *= 1 + CONT_GAIN * Math.exp(-dA * dA - dP * dP);
     }
-    if (process.env.RDBG) console.log("  cand a=%d(%s deg) len=%s frac=%s mag=%s q=%s sc=%s", p.a, (p.a*2).toFixed(0), g.len.toFixed(1), g.frac.toFixed(2), g.mag.toFixed(0), q.toFixed(3), sc.toFixed(3));
     if (!best || sc > best.sc) best = { sc, q, g, a: p.a };
   }
   if (!best || best.q < MIN_Q) return null;
