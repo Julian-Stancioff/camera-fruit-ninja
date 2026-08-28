@@ -103,7 +103,14 @@ export function detect(pixels, SW, SH, model, prev) {
   // votes for the SAME line here. Occlusion stops mattering.
   acc.fill(0);
   for (let j = 0; j < cnt; j++) {
-    const x = xs[j], y = ys[j], w = resp[y * SW + x];
+    const x = xs[j], y = ys[j], i = y * SW + x;
+    // Motion-weighted vote: a head, a picture frame and a skateboard all pass the
+    // bar filter somewhere, and together they can flood the peak list so the sword's
+    // line is never even scored. The sword is the thing that MOVES — its responders
+    // vote up to 4x, static clutter votes 1x. (First frame has no prevLum: plain
+    // votes, and the per-line motion boost below sorts it out a frame later.)
+    let w = resp[i];
+    if (prevLum) w *= 1 + 3 * Math.min(1, Math.abs(lum[i] - prevLum[i]) / 10);
     for (let t = 0; t < NTH; t++) {
       const r = (x * COS[t] + y * SIN[t] + rho0) | 0;
       acc[t * nr + r] += w;
@@ -127,41 +134,92 @@ export function detect(pixels, SW, SH, model, prev) {
   if (!peaks.length) return null;
   peaks.sort((a, b) => b[0] - a[0]);
 
+  // Diverse top-24: one strong blob votes at EVERY theta, so without suppression the
+  // whole candidate list is 24 near-copies of the same clutter line and the real
+  // blade never gets scored at all. Greedily skip peaks too close in (theta, rho) to
+  // one already taken.
+  const chosen = [];
+  for (const p of peaks) {
+    let dup = false;
+    for (const q of chosen) {
+      let dt = Math.abs(p[1] - q[1]); dt = Math.min(dt, NTH - dt);
+      if (dt < 4 && Math.abs(p[2] - q[2]) < 8) { dup = true; break; }
+    }
+    if (!dup) { chosen.push(p); if (chosen.length >= 24) break; }
+  }
+
   const lim = SW + SH;
   let best = null;
-  for (let k = 0; k < Math.min(peaks.length, 24); k++) {
-    const [, bt, br] = peaks[k];
+  for (let k = 0; k < chosen.length; k++) {
+    const [, bt, br] = chosen[k];
     const ct = COS[bt], st = SIN[bt];
     const rho = br - rho0;
     const px0 = rho * ct, py0 = rho * st, ux = -st, uy = ct;
-    let bestA = 0, bestB = 0, bestLen = -1, runA = null, last = null, mot = 0, motN = 0;
-    const motAt = (x, y) => {
-      if (!prevLum) return 0;
-      const i = ((y | 0) * SW + (x | 0));
-      return i >= 0 && i < n ? Math.abs(lum[i] - prevLum[i]) : 0;
-    };
-    const close = (a, b) => { if (last - runA > bestLen) { bestLen = last - runA; bestA = runA; bestB = last; } };
+    // Runs are scored by a motion-weighted SUM over the pixels that actually SUPPORT
+    // them — not by their span, and not by count × mean-motion. Both older scorings
+    // lost to clutter: GAP-bridging let a line chain several static decoys (torso edge
+    // + skateboard + picture frame, each ≤14px apart) into a phantom "long bar" whose
+    // span/count beat the real sword, and a mean-motion boost was diluted to nothing
+    // by exactly those static pixels. Summing 1 + boost·motion per supported pixel
+    // means 70 genuinely-moving sword pixels outscore 90 mostly-static chain pixels.
+    let bestA = 0, bestB = 0, bestScore = -1, bestSup = -1, runA = null, last = null, supN = 0, runScore = 0;
+    const close = () => { if (runScore > bestScore) { bestScore = runScore; bestSup = supN; bestA = runA; bestB = last; } };
     for (let t = -lim; t <= lim; t++) {
       const x = px0 + ux * t, y = py0 + uy * t;
-      if (x < 0 || y < 0 || x >= SW || y >= SH) { if (runA !== null) { close(); runA = null; } continue; }
-      let sup = 0;
-      for (let o = -NEAR; o <= NEAR && !sup; o += 1) {
+      if (x < 0 || y < 0 || x >= SW || y >= SH) { if (runA !== null) { close(); runA = null; supN = 0; runScore = 0; } continue; }
+      let sup = 0, m = 0;
+      for (let o = -NEAR; o <= NEAR; o += 1) {
         const sx = (x - st * o) | 0, sy = (y + ct * o) | 0;
-        if (sx >= 0 && sy >= 0 && sx < SW && sy < SH && resp[sy * SW + sx]) sup = 1;
+        if (sx < 0 || sy < 0 || sx >= SW || sy >= SH) continue;
+        const i = sy * SW + sx;
+        if (!resp[i]) continue;
+        sup = 1;
+        if (prevLum) { const mm = Math.abs(lum[i] - prevLum[i]); if (mm > m) m = mm; }
       }
-      if (sup) { if (runA === null) runA = t; last = t; mot += motAt(x, y); motN++; }
-      else if (runA !== null && t - last > GAP) { close(); runA = null; }
+      if (sup) {
+        if (runA === null) { runA = t; supN = 0; runScore = 0; }
+        last = t; supN++;
+        runScore += 1 + 2.2 * Math.min(1, m / 10);
+      } else if (runA !== null && t - last > GAP) { close(); runA = null; supN = 0; runScore = 0; }
     }
     if (runA !== null) close();
-    if (bestLen < MIN_LEN) continue;
-    let score = bestLen * (1 + 2.2 * Math.min(1, motN ? mot / motN / 10 : 0));
+    if (bestSup < MIN_LEN) continue;
+    let score = bestScore;
     if (prev && prev._t !== undefined) {
       let dt = Math.abs(bt - prev._t); dt = Math.min(dt, NTH - dt);
       if (dt < 6 && Math.abs(br - prev._r) < 14) score *= 1.4;
     }
     if (!best || score > best.score) {
-      best = { score, bt, br, len: bestLen,
+      best = { score, bt, br, len: bestB - bestA, aT: bestA, bT: bestB,
         e0: [px0 + ux * bestA, py0 + uy * bestA], e1: [px0 + ux * bestB, py0 + uy * bestB] };
+    }
+  }
+  if (best && prevLum) {
+    // Trim static overhang. GAP-bridging can extend the winning run PAST the real tip
+    // into collinear clutter (a picture-frame edge sitting near the swing line), so the
+    // reported endpoint overshoots and the dot lunges at furniture at the swing's
+    // extremes. The blade's own pixels moved since last frame, the clutter's did not:
+    // pull each end inward to the outermost supported-AND-moving position. A blade held
+    // perfectly still has no motion anywhere → the trim finds nothing and is skipped.
+    const ct = COS[best.bt], st = SIN[best.bt];
+    const rho = best.br - rho0, px0 = rho * ct, py0 = rho * st, ux = -st, uy = ct;
+    const moving = (t) => {
+      const x = px0 + ux * t, y = py0 + uy * t;
+      for (let o = -NEAR; o <= NEAR; o += 1) {
+        const sx = (x - st * o) | 0, sy = (y + ct * o) | 0;
+        if (sx < 0 || sy < 0 || sx >= SW || sy >= SH) continue;
+        const i = sy * SW + sx;
+        if (resp[i] && Math.abs(lum[i] - prevLum[i]) > 8) return true;
+      }
+      return false;
+    };
+    let a = best.aT, b = best.bT;
+    while (a < b && !moving(a)) a++;
+    while (b > a && !moving(b)) b--;
+    if (b - a >= MIN_LEN) {
+      best.e0 = [px0 + ux * a, py0 + uy * a];
+      best.e1 = [px0 + ux * b, py0 + uy * b];
+      best.len = b - a;
     }
   }
   if (!prevLum) model.prevLum = new Float32Array(n);

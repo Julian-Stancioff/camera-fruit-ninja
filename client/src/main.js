@@ -64,9 +64,9 @@ function loadSettings() {
   return {
     sensitivity: clamp(!isNaN(urlGain) ? urlGain : (s.sensitivity ?? 1.8), 1.2, 3.0),
     smoothing: clamp(s.smoothing ?? 0.6, 0, 1),
-    // Blade length as a fraction of screen height. Deliberately NOT the object's true
-    // size — a true-to-scale sword sweeps half the screen and slices everything. This
-    // keeps a katana's reach in the same ballpark as a hand swipe.
+    // Blade length CAP, as a fraction of screen height (×2.2 in clampBlade). The
+    // on-screen blade is the real mapped sword; the cap just stops a sword held close
+    // to the camera sweeping the whole screen and slicing everything at once.
     bladeLen: clamp(s.bladeLen ?? 0.2, 0.1, 0.35),
   };
 }
@@ -97,6 +97,10 @@ function resetLock(l) { l.lockPos = null; l.landmarks = null; l.present = false;
 const _sp = smoothingParams(settings.smoothing);
 const cursorFX = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 const cursorFY = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
+// Object mode tracks a full segment: the grip runs through cursorFX/FY above, the tip
+// through its own pair — both ends smoothed, or the blade jitters end-over-end.
+const tipFX = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
+const tipFY = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 
 // split-screen (2 players, 2 hands) state — one object per side
 let splitGame = null;
@@ -165,12 +169,21 @@ function updateLock(lock, chosen) {
 function easeSlow(lock) { lock.slow += ((lock.lost ? SLOW_LOST : 1) - lock.slow) * SLOW_EASE; }
 
 // ---------- object blade geometry (screen px) ----------
-// Screen-space blade from the grip: fixed length along the tracked angle. The camera
-// image is mirrored on screen, so the angle mirrors with it.
-function bladeFrom(grip, camAngle) {
-  const a = Math.PI - camAngle;
-  const L = settings.bladeLen * window.innerHeight;
-  return { grip, tip: { x: grip.x + Math.cos(a) * L, y: grip.y + Math.sin(a) * L } };
+// The blade IS the detected segment: both endpoints go through mapPoint (gain +
+// selfie mirror) exactly like a fingertip, so swinging the sword across the frame
+// moves the whole blade — and the tip dot — across the screen. (The old synthetic
+// blade mapped only the grip and rebuilt the tip from angle × a fixed length, which
+// is why the dot barely travelled sideways.) The one piece of synthesis left is a
+// length cap: mapPoint's gain can stretch a sword held close to the camera across
+// the whole screen, and a blade that long slices everything at once. #set-blade
+// drives the cap. Trimming takes the HILT side — the dot must stay on the real tip.
+function clampBlade(grip, tip) {
+  const maxL = settings.bladeLen * 2.2 * window.innerHeight; // ponytail: 2.2 tuned by eye; expose if reach feels wrong
+  const dx = grip.x - tip.x, dy = grip.y - tip.y;
+  const L = Math.hypot(dx, dy);
+  if (L <= maxL) return { grip, tip };
+  const k = maxL / L;
+  return { grip: { x: tip.x + dx * k, y: tip.y + dy * k }, tip };
 }
 // Cut with the blade from mid-shaft to tip. The hilt end is your fist — letting it cut
 // would slice fruit you never swung at. Each sample is speed-gated on its own downstream,
@@ -938,11 +951,15 @@ function tick(now) {
       bladeSeen = ob ? ob.endsNorm : null;
       updateLock(mainLock, ob ? { x: ob.gripNorm.x, y: ob.gripNorm.y, lm: null } : null);
       if (ob) {
-        const raw = mapPoint(ob.gripNorm.x, ob.gripNorm.y);
-        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladeSamplesPrev = null; }
+        // Map the REAL endpoints — each one individually through mapPoint, never one
+        // point plus a rotated offset, or the mirror breaks the geometry.
+        const rawG = mapPoint(ob.endsNorm[0].x, ob.endsNorm[0].y);
+        const rawT = mapPoint(ob.endsNorm[1].x, ob.endsNorm[1].y);
+        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); tipFX.reset(); tipFY.reset(); bladeSamplesPrev = null; }
         misses = 0;
-        const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
-        bladeLine = bladeFrom(cur, ob.angle);
+        const cur = { x: cursorFX.filter(rawG.x, freq), y: cursorFY.filter(rawG.y, freq) };
+        const tip = { x: tipFX.filter(rawT.x, freq), y: tipFY.filter(rawT.y, freq) };
+        bladeLine = clampBlade(cur, tip);
         const samples = bladeSamples(bladeLine);
         // One segment per point along the blade — Game gates each on its own speed.
         if (bladeSamplesPrev) {
@@ -956,7 +973,7 @@ function tick(now) {
         misses++;
         if (misses <= COAST_FRAMES && bladeLine) trail.push({ x: bladeLine.tip.x, y: bladeLine.tip.y, t: now });
         else {
-          cursorFX.reset(); cursorFY.reset();
+          cursorFX.reset(); cursorFY.reset(); tipFX.reset(); tipFY.reset();
           bladePrev = null; bladeCur = null;
           bladeLine = null; bladeSamplesPrev = null;
         }
@@ -1074,8 +1091,8 @@ function wireSettings() {
   };
   smooth.oninput = () => {
     const sp = smoothingParams(parseFloat(smooth.value));
-    cursorFX.minCutoff = cursorFY.minCutoff = sp.minCutoff;
-    cursorFX.beta = cursorFY.beta = sp.beta;
+    cursorFX.minCutoff = cursorFY.minCutoff = tipFX.minCutoff = tipFY.minCutoff = sp.minCutoff;
+    cursorFX.beta = cursorFY.beta = tipFX.beta = tipFY.beta = sp.beta;
     settings.smoothing = parseFloat(smooth.value); saveSettings(); upd();
   };
   const bladeEl = $("set-blade");
