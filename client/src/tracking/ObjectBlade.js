@@ -121,6 +121,8 @@ export class ObjectBlade {
     this.prev = hit;
     if (!hit) { this.stable = 0; return null; }
     this.stable = (this.stable || 0) + 1;
+    this.lastSeen = [{ x: hit.ends[0][0] / f.SW, y: hit.ends[0][1] / f.SH },
+                     { x: hit.ends[1][0] / f.SW, y: hit.ends[1][1] / f.SH }];
     if (this.stable < 3) return null;
 
     const hilt = hiltEnd(hit.ends, 0);
@@ -178,6 +180,8 @@ export class ObjectBlade {
       gripNorm: { x: hilt[0] / f.SW, y: hilt[1] / f.SH },
       angle,
       conf: hit.quality,
+      // the blade as actually seen, for drawing on the camera feed
+      endsNorm: [{ x: hilt[0] / f.SW, y: hilt[1] / f.SH }, { x: tip[0] / f.SW, y: tip[1] / f.SH }],
     };
   }
 

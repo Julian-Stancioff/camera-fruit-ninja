@@ -34,6 +34,16 @@ const SCAN_FRAMES = 10; // enrolment frames actually used — ~1s of camera is 3
                         // extra 20 buy nothing but a linear enrol cost
 const CONT_GAIN = 0.6;  // how much continuity with prev may outrank raw evidence
 const PEAK_FLOOR = 0.1; // fraction of the best response a candidate must reach
+// Static-edge suppression. A book spine is a genuine two-flanked bar, so no test that
+// looks at one frame can rule it out — but a shelf edge is in EVERY frame and a swung
+// blade is not, so the evidence that counts is the gradient NOT already in the room.
+const BG_UP = 1 / 300;   // rise: ~10 s at 30 fps. Slow on purpose — a blade held still
+                         // for a second must not be absorbed, or the detector loses it
+                         // exactly when the player pauses, which is the worse bug
+const BG_DOWN = 1;       // fall: immediate. What is no longer there was never background,
+                         // so a blade that has swung past leaves no ghost hole behind it
+const BG_WARM = 3;       // frames of build-up before the subtraction is at full strength
+const BG_PAD = 3;        // px of margin on the frozen band around the tracked blade
 const MIN_Q = 0.15;
 const CANDS = 12;
 
@@ -65,7 +75,7 @@ function scratch(SW, SH) {
   S = {
     SW, SH, NR, RHO0, cos, sin,
     lum: new Uint8Array(N), gx: new Int16Array(N), gy: new Int16Array(N),
-    mag: new Uint16Array(N), hist: new Uint32Array(64),
+    mag: new Uint16Array(N), raw: new Uint16Array(N), hist: new Uint32Array(64),
     acc: new Float32Array(NA * NR), sm: new Float32Array(NA * NR), resp: new Float32Array(NA * NR),
   };
   return S;
@@ -231,6 +241,74 @@ function walk(s, a, rho, hLo, hHi, thr) {
   return { len, frac: bCnt / (len + 1), mag: bSum / bCnt, cx: ox + tc * c, cy: oy + tc * sn, angle: Math.atan2(sn, c) };
 }
 
+// The background is per-pixel — 83KB of Float32 at 192x108, far past what the
+// localStorage this model is persisted to will take — so it hangs off a NON-ENUMERABLE
+// field that JSON.stringify skips, and is rebuilt (cold, warming up again) when missing.
+function background(model, N, seed) {
+  if (seed || !model.bg || model.bg.m.length !== N) {
+    Object.defineProperty(model, "bg", {
+      value: seed || { n: 0, m: new Float32Array(N) }, writable: true, configurable: true,
+    });
+  }
+  return model.bg;
+}
+
+// Evidence = this frame's gradient minus what has always been there. `g` ramps the
+// subtraction in over the first frames, so a cold model subtracts nothing and frame 1
+// behaves exactly as it did before any of this existed.
+function novelty(s, bg, g) {
+  const { SW, SH, mag, raw, hist } = s;
+  raw.set(mag); // learn() has to see the real gradient, not the residue left after this
+  if (g <= 0) return;
+  hist.fill(0);
+  for (let y = 1; y < SH - 1; y++) {
+    let i = y * SW + 1;
+    for (let x = 1; x < SW - 1; x++, i++) {
+      const v = mag[i] - g * bg[i];
+      const e = v > 0 ? v : 0;
+      mag[i] = e;
+      hist[e >> 5]++;
+    }
+  }
+}
+
+// Learn the room from this frame, minus the band around the blade just found in it.
+function learn(s, bg, hit, hHi, L) {
+  const { SW, SH, raw } = s, b = bg.m;
+  // A running mean of the frames so far, settling into the 10 s exponential once there
+  // are 300 of them. A plain 10 s EMA from zero would suppress nothing for its first 300
+  // frames — and 10 s of the detector sitting on a bookshelf is 10 s of broken game —
+  // while a plain running mean would never adapt to a room that changes.
+  const up = Math.max(BG_UP, 1 / (bg.n + 1));
+  // Frame 1 of a cold model is also the one frame the tracker cannot be protected on:
+  // with no background yet there is nothing to tell furniture from blade, and freezing
+  // around a latched shelf edge would shield the one line that most needs to be learned.
+  const warm = bg.n > 0 && hit;
+  const dx = warm ? Math.cos(hit.angle) : 0, dy = warm ? Math.sin(hit.angle) : 0;
+  const cx = warm ? hit.cx : 0, cy = warm ? hit.cy : 0;
+  // Sized on the ENROLLED length, not the measured one: a frame that read the blade short
+  // is exactly the frame whose leftover tip would otherwise be learned as furniture, and
+  // the frame after that would read it shorter still.
+  const hu = warm ? Math.max(hit.len, L) / 2 + BG_PAD : -1, hv = hHi + BG_PAD;
+  for (let y = 1; y < SH - 1; y++) {
+    const ay = y - cy;
+    let i = y * SW + 1;
+    for (let x = 1; x < SW - 1; x++, i++) {
+      const d = raw[i] - b[i];
+      if (d <= 0) { b[i] += d * BG_DOWN; continue; }
+      // The freeze is one-sided: inside the band nothing may RISE into the background, so
+      // the object cannot eat itself, but a fall still applies — otherwise a ghost learned
+      // while the blade was not yet tracked would be sealed in underneath the band.
+      if (hu > 0) {
+        const ax = x - cx, u = ax * dx + ay * dy, v = ax * dy - ay * dx;
+        if (u < hu && u > -hu && v < hv && v > -hv) continue;
+      }
+      b[i] += d * up;
+    }
+  }
+  bg.n++;
+}
+
 /**
  * Motion is used for exactly one thing: deciding WHICH straight line is the object.
  * A door frame, a shelf edge and a poster all sit on their own temporal mean forever;
@@ -251,6 +329,12 @@ export function enroll(frames, SW, SH) {
   for (let i = 0; i < N; i++) mean[i] /= use.length;
 
   const mask = new Uint8Array(N), total = (SW - 2) * (SH - 2);
+  // The enrolment frames are the player waving the object around their real room, which
+  // makes them the best sample of that room we will ever get: the object is somewhere
+  // different in every one, so the per-pixel MINIMUM gradient over them is the furniture
+  // with the object taken out. detect() starts warm on that instead of spending its first
+  // frames locked to a bookshelf while it works the same thing out live.
+  const seed = new Float32Array(N).fill(Infinity), any = new Float32Array(N).fill(Infinity);
   let best = null;
   for (const frame of use) {
     luma(frame, s.lum, N);
@@ -260,8 +344,19 @@ export function enroll(frames, SW, SH) {
       mask[i] = d > MOVE_T || d < -MOVE_T ? 1 : 0;
       moving += mask[i];
     }
-    if (moving < 60) continue; // object held still in this frame — no way to single it out
     sobel(s);
+    for (let i = SW + 1; i < N - SW - 1; i++) {
+      const m = s.mag[i];
+      if (m < any[i]) any[i] = m;
+      // `seed` skips the mover and its 1px sobel halo — the room is what is left when the
+      // object is taken out. `any` is the fallback for pixels the object never cleared:
+      // over a high-contrast edge the object drags that pixel's own temporal mean far
+      // enough that every frame reads as movement, and a spine with no background at all
+      // is a spine that is never suppressed.
+      if (mask[i] | mask[i - 1] | mask[i + 1] | mask[i - SW] | mask[i + SW]) continue;
+      if (m < seed[i]) seed[i] = m;
+    }
+    if (moving < 60) continue; // object held still in this frame — no way to single it out
     const cut = cutoff(s.hist, total, KEEP);
     if (!vote(s, cut, mask)) continue;
     smooth(s);
@@ -279,22 +374,31 @@ export function enroll(frames, SW, SH) {
     }
   }
   if (!best) return null;
-  return { len: best.len, halfW: best.h, edgeMag: best.mag, sw: SW, sh: SH };
+  const model = { len: best.len, halfW: best.h, edgeMag: best.mag, sw: SW, sh: SH };
+  for (let i = 0; i < N; i++) if (seed[i] === Infinity) seed[i] = any[i] === Infinity ? 0 : any[i];
+  // Worth one frame short of warm: the room in it is real, but it was sampled a moment
+  // ago and the object may have lingered somewhere in it, so the first live frame still
+  // discounts the seed rather than trusting it outright.
+  background(model, N, { n: BG_WARM - 1, m: seed });
+  return model;
 }
 
 /** @returns {{cx,cy,angle,len,ends,quality}|null} */
 export function detect(pixels, SW, SH, model, prev) {
   if (!model) return null;
-  const s = scratch(SW, SH);
+  const s = scratch(SW, SH), bg = background(model, SW * SH);
   const scale = model.sw ? Math.hypot(SW, SH) / Math.hypot(model.sw, model.sh) : 1;
   const L = model.len * scale;
   const hLo = Math.max(1, Math.round(model.halfW * scale)), hHi = hLo + 1;
   luma(pixels, s.lum, SW * SH);
   sobel(s);
-  if (!vote(s, cutoff(s.hist, (SW - 2) * (SH - 2), KEEP), null)) return null;
+  novelty(s, bg.m, Math.min(1, bg.n / BG_WARM));
+  // Every exit learns from the frame: a room the detector is failing in is still a room.
+  const done = (r) => { learn(s, bg, r, hHi, L); return r; };
+  if (!vote(s, cutoff(s.hist, (SW - 2) * (SH - 2), KEEP), null)) return done(null);
   smooth(s);
   const max = respond(s, hLo, hHi);
-  if (max <= 0) return null;
+  if (max <= 0) return done(null);
 
   const thr = Math.max(MAG_FLOOR, WALK_FRAC * model.edgeMag);
   let best = null;
@@ -317,7 +421,7 @@ export function detect(pixels, SW, SH, model, prev) {
     }
     if (!best || sc > best.sc) best = { sc, q, g, a: p.a };
   }
-  if (!best || best.q < MIN_Q) return null;
+  if (!best || best.q < MIN_Q) return done(null);
 
   // Sub-bin angle: 2° bins would stair-step a sword visibly. Re-read the two neighbouring
   // angle bins at the ρ the SAME physical line has there, then fit a parabola.
@@ -330,9 +434,9 @@ export function detect(pixels, SW, SH, model, prev) {
   const angle = ((a + d) * Math.PI) / NA;
 
   const hl = g.len / 2, ex = Math.cos(angle) * hl, ey = Math.sin(angle) * hl;
-  return {
+  return done({
     cx: g.cx, cy: g.cy, angle, len: g.len,
     ends: [[g.cx - ex, g.cy - ey], [g.cx + ex, g.cy + ey]],
     quality: best.q,
-  };
+  });
 }
