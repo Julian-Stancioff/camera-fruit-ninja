@@ -103,12 +103,43 @@ const ROOM = buildRoom();
 // against the crushed-black zone / the chair — as measured on the real katana.
 const swordLuma = (y) => (y < DARK_Y ? 50 : 30);
 
+// ------------------------------------------------------------------ the PLAYER
+// What every earlier scene lacked, and what the live game actually faces: the player
+// HIMSELF is foreground — head, shoulders, torso, a raised bent arm, all one mass
+// that sways together. Head and shoulders sit against the BRIGHT wall (the part of
+// his silhouette the camera actually resolves); the torso below DARK_Y is crushed to
+// ~8 luma of contrast like everything else down there. Top of the skull is ONE px
+// above the blade tip's rest height, so the tip-is-up prior alone cannot separate
+// them — that is the point.
+const HEAD_C = [117, 37];        // head centre at rest (rx 9, ry 11 -> skull top y=26)
+const ELBOW_TIP = [136, 36];     // far end of the raised forearm — thin, high, skin-lit
+const swayK = (k) => [
+  Math.round(1.6 * Math.sin((2 * Math.PI * k) / 90) + 0.7 * Math.sin((2 * Math.PI * k) / 53)),
+  Math.round(0.5 * Math.sin((2 * Math.PI * k) / 71)),
+];
+function drawPerson(p, k) {
+  const [ox, oy] = swayK(k);     // whole-pixel sway: the silhouette flickers instead
+  const hx = HEAD_C[0] + ox, hy = HEAD_C[1] + oy;   // of being learned once and vanishing
+  rect(p, 89 + ox, 54 + oy, 147 + ox, DARK_Y - 1, 55);      // upper torso vs bright wall
+  rect(p, 89 + ox, DARK_Y, 147 + ox, H - 1, 30);            // lower torso, crushed zone
+  rect(p, 103 + ox, 50 + oy, 141 + ox, 55 + oy, 55);        // shoulder line
+  bar(p, 88 + ox, 76 + oy, Math.atan2(40, -10), 41, 5,      // lead arm down to the grip
+    (y) => (y < DARK_Y ? 130 : 28));
+  bar(p, 145 + ox, 48 + oy, Math.atan2(-11, 10), 15, 5, 130);   // raised upper arm...
+  bar(p, 143 + ox, 39 + oy, Math.atan2(-7, -14), 16, 4, 130);   // ...bent forearm: thin, high
+  rect(p, 112 + ox, 46 + oy, 122 + ox, 51 + oy, 130);       // neck
+  for (let y = -11; y <= 11; y++) for (let x = -9; x <= 9; x++) {   // head: hair over face
+    if ((x * x) / 81 + (y * y) / 121 <= 1) put(p, hx + x, hy + y, y < -3 ? 38 : 130);
+  }
+}
+
 // ONE reused frame buffer — same reason as the axis test: per-frame allocation makes
 // GC, not detect(), the worst-case in the timing numbers.
 const FRAME = new Uint8ClampedArray(W * H * 4);
-function makeFrame(seed, k, pose, wSword) {
+function makeFrame(seed, k, pose, wSword, person) {
   const p = FRAME;
   p.set(ROOM);
+  if (person) drawPerson(p, k);
   if (pose) bar(p, pose.cx, pose.cy, pose.angle, pose.len, wSword, swordLuma);
   const rnd = rng(seed + k * 7919);
   for (let i = 0; i < W * H; i++) {
@@ -154,15 +185,15 @@ const n1 = (v) => (Number.isFinite(v) ? v.toFixed(1) : "-");
 const n2 = (v) => (Number.isFinite(v) ? v.toFixed(2) : "-");
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
-function runSeq(script, wSword, seed) {
-  // script: array of {name, n, poseAt(f 0..1)|null}; returns [{r, ms, pose, phase}]
-  const model = enroll([makeFrame(seed, 0, null, 0)], W, H);
+function runSeq(script, wSword, seed, person) {
+  // script: array of {name, n, poseAt(f 0..1, k)|null}; returns [{r, ms, pose, phase}]
+  const model = enroll([makeFrame(seed, 0, null, 0, person)], W, H);
   const out = [];
   let prev = null, k = 0;
   for (const ph of script) {
     for (let i = 0; i < ph.n; i++, k++) {
-      const pose = ph.poseAt ? ph.poseAt(ph.n > 1 ? i / (ph.n - 1) : 0) : null;
-      const p = makeFrame(seed, k, pose, wSword);
+      const pose = ph.poseAt ? ph.poseAt(ph.n > 1 ? i / (ph.n - 1) : 0, k) : null;
+      const p = makeFrame(seed, k, pose, wSword, person);
       const t0 = process.hrtime.bigint();
       const r = detect(p, W, H, model, prev);
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
@@ -331,9 +362,10 @@ console.log("== 3b. STILL -> LOWERED OUT OF FRAME -> RAISED AGAIN ==");
 // blur scales with instantaneous angular speed (zero at the reversals).
 
 const COV = new Float32Array(W * H);
-function blurFrame(seed, k, px, py, angMid, angSpan, len, wSword) {
+function blurFrame(seed, k, px, py, angMid, angSpan, len, wSword, person) {
   const p = FRAME;
   p.set(ROOM);
+  if (person) drawPerson(p, k);
   COV.fill(0);
   const S = 7;
   for (let s = 0; s < S; s++) {
@@ -366,15 +398,17 @@ function blurFrame(seed, k, px, py, angMid, angSpan, len, wSword) {
   return p;
 }
 
-function runBlurSwing({ n, blurPx, seed }) {
+function runBlurSwing({ n, blurPx, seed, person }) {
   const PX = 90, PY = 65, LEN = 74, UP = rad(-90);
   const angAt = (f) => UP + rad(70) * Math.sin(2 * Math.PI * f);
   const upPose = pivotPose(PX, PY, UP, LEN);
-  const model = enroll([makeFrame(seed, 0, null, 0)], W, H);
+  const model = enroll([makeFrame(seed, 0, null, 0, person)], W, H);
   let prev = null, k = 0;
-  for (const ph of [raiseInto(upPose), { name: "pre", n: 20, poseAt: () => upPose }]) {
+  const lead = person ? [{ name: "presence", n: 30, poseAt: null }] : [];
+  for (const ph of [...lead, raiseInto(upPose), { name: "pre", n: 20, poseAt: () => upPose }]) {
     for (let i = 0; i < ph.n; i++, k++) {
-      prev = detect(makeFrame(seed, k, ph.poseAt(ph.n > 1 ? i / (ph.n - 1) : 0), 2), W, H, model, prev) || null;
+      const pose = ph.poseAt ? ph.poseAt(ph.n > 1 ? i / (ph.n - 1) : 0) : null;
+      prev = detect(makeFrame(seed, k, pose, 2, person), W, H, model, prev) || null;
     }
   }
   const out = [];
@@ -382,7 +416,7 @@ function runBlurSwing({ n, blurPx, seed }) {
     const f = i / (n - 1);
     const aM = angAt(f);
     const span = (blurPx / LEN) * Math.abs(Math.cos(2 * Math.PI * f));   // blur ∝ speed
-    const p = blurFrame(seed, k, PX, PY, aM, span, LEN, 2);
+    const p = blurFrame(seed, k, PX, PY, aM, span, LEN, 2, person);
     const t0 = process.hrtime.bigint();
     const r = detect(p, W, H, model, prev);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
@@ -448,6 +482,136 @@ console.log("== 5. BUDGET (target: median < 3ms at 192x108) ==");
   console.log(`  detect() median ${n2(med(ms))}ms  p99 ${n2(p99(ms))}ms  worst ${n2(mx(ms))}ms`);
   check("budget", med(ms) < 3, `median ${n2(med(ms))}ms >= 3ms`);
   check("budget", p99(ms) < 6, `p99 ${n2(p99(ms))}ms >= 6ms`);
+}
+
+// ------------------------------------------------------------------ 6. THE PLAYER
+// The deployed failure ("it's not even connected to the tip of the blade at all"):
+// every scene above had a bare blade in an empty room, so "extremity of the
+// foreground" was trivially the tip. These scenes put the PLAYER in frame and are
+// the regression tests for that failure. A report >15px from the tip's truth that
+// lands on the player (head disc or elbow) counts as STOLEN — the exact bug.
+
+console.log("== 6. THE PLAYER IN FRAME (head, shoulders, torso, raised elbow) ==");
+
+const onPlayer = (r) => dist([r.x, r.y], HEAD_C) < 15 || dist([r.x, r.y], ELBOW_TIP) < 9;
+const stolen = (rs) => rs.filter((s) => s.r &&
+  (!s.pose || dist([s.r.x, s.r.y], truthTip(s.pose)) > 15) && onPlayer(s.r)).length;
+const personMs = [];
+
+// 6a. sword raised into pose, then HELD STILL while the player sways
+{
+  const swayStill = (f, k) => {
+    const [ox, oy] = swayK(k);
+    return { ...STILL, cx: STILL.cx + ox, cy: STILL.cy + oy };
+  };
+  const res = runSeq([
+    { name: "presence", n: 30, poseAt: null },            // no sword yet
+    raiseInto(STILL),
+    { name: "still", n: 300, poseAt: swayStill },
+  ], 2, 211, true);
+  for (const s of res) personMs.push(s.ms);
+  const pres = res.filter((s) => s.phase === "presence");
+  const presHits = pres.filter((s) => s.r).length;
+  const still = res.filter((s) => s.phase === "still").slice(12);
+  const hits = still.filter((s) => s.r);
+  const errs = hits.map((s) => dist([s.r.x, s.r.y], truthTip(s.pose)));
+  const rate = hits.length / still.length;
+  console.log(`  6a held still: pre-sword reports ${presHits}/30, stolen ${stolen(pres)}` +
+    `  |  found ${(100 * rate).toFixed(1)}%  tip err med ${n2(med(errs))}px p90 ${n2(p90(errs))}px worst ${n2(mx(errs))}px  stolen ${stolen(still)}`);
+  check("player-still", stolen(pres) === 0, `${stolen(pres)} pre-sword reports on the player`);
+  check("player-still", stolen(still) === 0, `${stolen(still)} still-phase reports stolen by the player`);
+  check("player-still", rate >= 0.95, `found ${(100 * rate).toFixed(1)}% < 95%`);
+  check("player-still", med(errs) <= 3.5, `median tip err ${n2(med(errs))}px > 3.5px`);
+}
+
+// 6b. full swing with the player behind the blade
+{
+  const PX = 90, PY = 65, LEN = 74, UP = rad(-90);
+  const upPose = pivotPose(PX, PY, UP, LEN);
+  const swing = (f) => pivotPose(PX, PY, UP + rad(70) * Math.sin(2 * Math.PI * f), LEN);
+  const res = runSeq([
+    { name: "presence", n: 30, poseAt: null },
+    raiseInto(upPose),
+    { name: "pre", n: 20, poseAt: () => upPose },
+    { name: "swing", n: 72, poseAt: swing },
+  ], 2, 223, true);
+  for (const s of res) personMs.push(s.ms);
+  const sw = res.filter((s) => s.phase === "swing");
+  const hits = sw.filter((s) => s.r);
+  const errs = hits.map((s) => dist([s.r.x, s.r.y], truthTip(s.pose)));
+  const rate = hits.length / sw.length;
+  const close = errs.filter((e) => e <= 10).length / sw.length;
+  console.log(`  6b swing: tracked ${(100 * rate).toFixed(1)}%  within 10px ${(100 * close).toFixed(1)}%` +
+    `  tip err med ${n2(med(errs))}px p90 ${n2(p90(errs))}px worst ${n2(mx(errs))}px  stolen ${stolen(sw)}`);
+  check("player-swing", stolen(sw) === 0, `${stolen(sw)} swing reports stolen by the player`);
+  check("player-swing", rate >= 0.90, `tracked ${(100 * rate).toFixed(1)}% < 90%`);
+  check("player-swing", med(errs) <= 5, `median tip err ${n2(med(errs))}px > 5px`);
+}
+
+// 6c. NO SWORD at all: the player alone must produce NOTHING — a detector that
+// locks onto a head is worse than one that reports nothing.
+{
+  const res = runSeq([{ name: "empty", n: 340, poseAt: null }], 0, 227, true);
+  for (const s of res) personMs.push(s.ms);
+  const warm = res.slice(0, 30).filter((s) => s.r).length;
+  const late = res.slice(30).filter((s) => s.r);
+  const lateOnPlayer = late.filter((s) => onPlayer(s.r)).length;
+  console.log(`  6c no sword: warm-up (0-29) ${warm}/30, after ${late.length}/310 (${lateOnPlayer} on the player)`);
+  check("player-empty", late.length === 0, `${late.length} reports with only the player in frame`);
+}
+
+// 6d. sword hanging idle, low and diagonal — the cold-acquisition trap TIP_MODE.md
+// warned about: the head is 26px HIGHER than this tip, so the up-prior favours the
+// head outright. Silence is acceptable here (the sword has never moved); a report on
+// the player is the bug.
+{
+  const HANG = poseFromEnds(83, 95, 62, 52);
+  const swayHang = (f, k) => {
+    const [ox, oy] = swayK(k);
+    return { ...HANG, cx: HANG.cx + ox, cy: HANG.cy + oy };
+  };
+  const res = runSeq([{ name: "hang", n: 120, poseAt: swayHang }], 2, 229, true);
+  for (const s of res) personMs.push(s.ms);
+  const rep = res.slice(20).filter((s) => s.r);
+  const bad = rep.filter((s) => onPlayer(s.r)).length;
+  console.log(`  6d idle hanging sword: reports ${rep.length}/100, on the player ${bad}`);
+  check("player-hang", bad === 0, `${bad} idle-sword reports on the player`);
+}
+
+// 6e. the blur sweep — the property the whole mode exists for — WITH the player
+console.log("  6e blur sweep with the player in frame:");
+{
+  for (const B of [8, 16, 24]) {
+    const res = runBlurSwing({ n: 72, blurPx: B, seed: 311 + B, person: true });
+    for (const s of res) personMs.push(s.ms);
+    const hits = res.filter((s) => s.r);
+    const errs = hits.map((s) => dist([s.r.x, s.r.y], s.truth));
+    const rate = hits.length / res.length;
+    const close = errs.filter((e) => e <= 10).length / res.length;
+    const bad = res.filter((s) => s.r && dist([s.r.x, s.r.y], s.truth) > 15 && onPlayer(s.r)).length;
+    console.log(`     blur ${String(B).padStart(2)}px  tracked ${(100 * rate).toFixed(1)}%  within 10px ${(100 * close).toFixed(1)}%` +
+      `  tip err med ${n1(med(errs))}px p90 ${n1(p90(errs))}px worst ${n1(mx(errs))}px  stolen ${bad}`);
+    check(`player-blur${B}`, bad === 0, `${bad} blurred reports stolen by the player`);
+    if (B === 8) {
+      check("player-blur8", rate >= 0.90, `tracked ${(100 * rate).toFixed(1)}% < 90%`);
+      check("player-blur8", med(errs) <= 6, `median tip err ${n1(med(errs))}px > 6px`);
+    }
+    if (B === 16) {
+      check("player-blur16", rate >= 0.85, `tracked ${(100 * rate).toFixed(1)}% < 85%`);
+      check("player-blur16", med(errs) <= 9, `median tip err ${n1(med(errs))}px > 9px`);
+    }
+    if (B === 24) {
+      check("player-blur24", rate >= 0.80, `tracked ${(100 * rate).toFixed(1)}% < 80%`);
+      check("player-blur24", med(errs) <= 18, `median tip err ${n1(med(errs))}px > 18px`);
+    }
+  }
+}
+
+// 6f. budget with the player in frame (his silhouette multiplies the candidate set)
+{
+  console.log(`  6f budget with player: median ${n2(med(personMs))}ms  p99 ${n2(p99(personMs))}ms  worst ${n2(mx(personMs))}ms`);
+  check("player-budget", med(personMs) < 3, `median ${n2(med(personMs))}ms >= 3ms`);
+  check("player-budget", p99(personMs) < 6, `p99 ${n2(p99(personMs))}ms >= 6ms`);
 }
 
 if (failures) { console.log(`\n${failures} FAILURE(S)`); process.exit(1); }

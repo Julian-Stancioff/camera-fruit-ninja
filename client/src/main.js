@@ -575,6 +575,7 @@ function teardownSocket() {
 function backToMenu() {
   teardownSocket();
   exitKatana();
+  stopTipLoop();
   mode = "solo";
   bladeMode = "hand";
   applySmoothing();
@@ -737,6 +738,27 @@ function handleSplitHands(result, now, dtMs, freq) {
 // offer Approve / Deny. Approving stores the object's appearance AND its angle offset
 // from the hand — that offset is what lets tracking fall back to the hand's own
 // orientation on the frames where a mirror-finish blade vanishes into the background.
+// THE PROBE, RUN AS THE GAME. ?tipprobe tracked the blade well on the real camera and the
+// game did not, with the SAME detector — so the difference was the wiring around it. The
+// probe is a plain setInterval that grabs a frame, detects, and shows the answer: not gated
+// on rAF, not gated on the video-frame callback, not smoothed. This is that loop verbatim,
+// and the game just reads whatever it last produced.
+let tipTimer = null, latestTip = null, tipQ = 0, tipHits = 0;
+function startTipLoop() {
+  stopTipLoop();
+  tipTimer = setInterval(() => {
+    if (video.readyState < 2) return;
+    const r = objectBlade.update(video, 60);
+    latestTip = r ? r.tipNorm : null;
+    tipQ = r ? (r.conf ?? 0) : 0;
+    tipHits = r ? tipHits + 1 : 0;
+  }, 60);
+}
+function stopTipLoop() {
+  if (tipTimer) clearInterval(tipTimer);
+  tipTimer = null; latestTip = null; tipHits = 0;
+}
+
 function startKatana() {
   bladeMode = "object";
   applySmoothing();
@@ -758,6 +780,7 @@ function enterKatana() {
   overlay.classList.add("overlay-top");
   objectBlade.rescan();
   $("kat-actions").hidden = true;
+  startTipLoop();
   $("kat-status").textContent = "Keep the sword DOWN for a second";
   $("kat-sub").textContent = "learning your room\u2026";
   $("katana-screen").hidden = false;
@@ -772,50 +795,46 @@ function exitKatana() {
 }
 
 function katanaTick(now) {
-  // Learn the room with the sword OUT of frame first. The detector finds the blade by
-  // what is NOT background, so if it is already raised while the background is being
-  // learned it gets absorbed and becomes invisible. The ?tipprobe harness that tracked
-  // well happened to do this — it counted down before it started looking — and that is
-  // most of why it worked.
+  // The detector runs on its own timer (startTipLoop); this only watches what it reports.
+  // Learn the room with the sword OUT of frame first — the blade is found by what is NOT
+  // background, so enrolling while it is raised absorbs it.
   if (now < katGate.warmUntil) {
-    if (video.readyState >= 2) objectBlade.scan(video);
     const left = Math.ceil((katGate.warmUntil - now) / 1000);
+    $("kat-status").textContent = "Keep the sword DOWN for a second";
     $("kat-sub").textContent = `learning your room\u2026 ${left}`;
-    octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    return;
-  }
-  if (!katGate.locked && video.readyState >= 2) {
-    // scan() buffers frames and only commits once it has seen enough movement — the
-    // wave is what separates the blade from every other long edge in the room.
-    const cand = objectBlade.scan(video);
-    if (cand) {
-      katCand = cand;
-      // Mapped — straight into the countdown, no approval click.
+  } else if (!katGate.locked) {
+    if (tipHits >= 3) {
       katGate.locked = true;
-      objectBlade.accept(cand);
       exitKatana();
       startSolo();
       return;
-    } else {
-      $("kat-status").textContent = "Now raise the sword \u2694";
-      $("kat-sub").textContent = "Hold it up, clear of your body";
     }
+    $("kat-status").textContent = "Now raise the sword \u2694";
+    $("kat-sub").textContent = latestTip ? "got it\u2026" : "Hold it up, clear of your body";
   }
 
-  if (KATDEBUG) {
-    katDebugCapture(now);
-    if (now - lastKatLog > 250) {
-      lastKatLog = now;
-      console.log("[kat] " + JSON.stringify({ phase: "searching", seen: objectBlade.lastSeen ? 1 : 0 }));
-    }
-  }
   octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-  drawKatanaPreview(katCand);
-  if (objectBlade.lastSeen) drawTipOnPip(objectBlade.lastSeen, video);
+  if (latestTip) drawCrosshairOnCam(latestTip, video);
 }
 
-// The tracked tip, drawn on the camera feed — the "is it mapped?" readout. Same white
-// light the game draws, so the PiP shows exactly what is driving the blade.
+// The probe's crosshair, on the live camera view — so it is obvious at a glance whether
+// the tracker is on the blade.
+function drawCrosshairOnCam(p, videoEl) {
+  if (!p || !videoEl) return;
+  const rect = videoEl.getBoundingClientRect();
+  if (rect.width < 4) return;
+  const vw = videoEl.videoWidth || 1280, vh = videoEl.videoHeight || 720;
+  const a = mapToCam(p.x, p.y, rect, vw, vh);
+  octx.save();
+  octx.strokeStyle = "#ff2d55"; octx.lineWidth = 3; octx.shadowColor = "#ff2d55"; octx.shadowBlur = 8;
+  octx.beginPath(); octx.arc(a.x, a.y, 14, 0, Math.PI * 2); octx.stroke();
+  octx.beginPath();
+  octx.moveTo(a.x - 22, a.y); octx.lineTo(a.x + 22, a.y);
+  octx.moveTo(a.x, a.y - 22); octx.lineTo(a.x, a.y + 22);
+  octx.stroke();
+  octx.restore();
+}
+
 function drawTipOnPip(p, videoEl) {
   if (!p || !videoEl) return;
   const rect = videoEl.getBoundingClientRect();
@@ -1010,9 +1029,9 @@ function tick(now) {
       // which also hands the frame back the ~10ms MediaPipe was costing. mainLock is
       // reused purely as presence bookkeeping so the lost-hint and the fruit slowdown
       // keep working unchanged; it holds no landmarks here.
-      const ob = objectBlade.update(video, dtMs);
+      const ob = latestTip ? { tipNorm: latestTip, conf: tipQ } : null;
       bladeSeen = ob ? [ob.tipNorm, ob.tipNorm] : null;
-      bladeConf = ob ? (ob.conf ?? 1) : 0;
+      bladeConf = ob ? ob.conf : 0;
       if (KATDEBUG) {
         katDebugCapture(now);
         if (now - lastKatLog > 250) {
@@ -1218,7 +1237,7 @@ function drawOverlay(now) {
   drawTip(bladeCur);
   // The blade as the camera sees it, drawn on the PiP — the "is it mapped?" readout,
   // and the object-mode equivalent of the hand skeleton.
-  if (bladeMode === "object" && bladeSeen) drawTipOnPip(bladeSeen[0], $("webcam"));
+  if (bladeMode === "object" && latestTip) drawCrosshairOnCam(latestTip, $("webcam"));
   if (inActiveGame() && mainLock.present && mainLock.landmarks)
     drawHandOnPip(mainLock.landmarks, $("webcam"), "rgba(255,236,180,0.7)", "#ffd24a");
 }
