@@ -7,7 +7,7 @@ import { Game } from "./game/Game.js";
 import { Fruit } from "./game/Fruit.js";
 import { bladeSpeed } from "./game/slice.js";
 import { OneEuroFilter } from "./tracking/OneEuroFilter.js";
-import { ObjectBlade } from "./tracking/ObjectBlade.js";
+import { TipBlade } from "./tracking/TipBlade.js";
 import { addXP, getXP, levelFor, levelProgress, nextLevel } from "./game/belts.js";
 import { connect } from "./net/net.js";
 import { NetGame } from "./net/NetGame.js";
@@ -40,12 +40,13 @@ let readyGate = null, readyResult = null; // hand-confirmation gate before a mat
 // and it becomes the blade. Kept as a separate flag from `mode` so every solo code path
 // — timer, music, pause, replay — works untouched; only the blade's source changes.
 let bladeMode = "hand";          // "hand" | "object"
-const objectBlade = new ObjectBlade();
+// Tip-only tracking: the blade's tip is a point and drives the game exactly like the
+// index fingertip. Axis fitting (ObjectBlade + detectAuto) is kept in the repo but is no
+// longer wired — it loses a swung blade to motion blur, which is when it matters most.
+const objectBlade = new TipBlade();
 let katGate = null, katCand = null;
-let bladeLine = null;            // {grip, tip} in screen px, object mode only
 let bladeSeen = null;            // the blade as detected, normalized cam coords, for the PiP
 let bladeConf = 1;               // detector confidence; low means we are coasting on prediction
-let bladeSamplesPrev = null;     // previous frame's sample points along the blade
 let paused = false, pauseStart = 0;       // pause / quit-to-menu
 const oppTrail = [];
 
@@ -202,36 +203,6 @@ function updateLock(lock, chosen) {
   else { lock.present = false; lock.lostFrames++; if (lock.lostFrames >= LOST_FRAMES) lock.lost = true; }
 }
 function easeSlow(lock) { lock.slow += ((lock.lost ? SLOW_LOST : 1) - lock.slow) * SLOW_EASE; }
-
-// ---------- object blade geometry (screen px) ----------
-// The blade IS the detected segment: both endpoints go through mapPoint (gain +
-// selfie mirror) exactly like a fingertip, so swinging the sword across the frame
-// moves the whole blade — and the tip dot — across the screen. (The old synthetic
-// blade mapped only the grip and rebuilt the tip from angle × a fixed length, which
-// is why the dot barely travelled sideways.) The one piece of synthesis left is a
-// length cap: mapPoint's gain can stretch a sword held close to the camera across
-// the whole screen, and a blade that long slices everything at once. #set-blade
-// drives the cap. Trimming takes the HILT side — the dot must stay on the real tip.
-function clampBlade(grip, tip) {
-  const maxL = settings.bladeLen * 2.2 * window.innerHeight; // ponytail: 2.2 tuned by eye; expose if reach feels wrong
-  const dx = grip.x - tip.x, dy = grip.y - tip.y;
-  const L = Math.hypot(dx, dy);
-  if (L <= maxL) return { grip, tip };
-  const k = maxL / L;
-  return { grip: { x: tip.x + dx * k, y: tip.y + dy * k }, tip };
-}
-// Cut with the blade from mid-shaft to tip. The hilt end is your fist — letting it cut
-// would slice fruit you never swung at. Each sample is speed-gated on its own downstream,
-// so a wrist-whip cuts with the fast tip while the near-still base does not.
-const BLADE_T0 = 0.35, BLADE_SAMPLES = 6;
-function bladeSamples({ grip, tip }) {
-  const out = [];
-  for (let i = 0; i < BLADE_SAMPLES; i++) {
-    const t = BLADE_T0 + (1 - BLADE_T0) * (i / (BLADE_SAMPLES - 1));
-    out.push({ x: grip.x + (tip.x - grip.x) * t, y: grip.y + (tip.y - grip.y) * t });
-  }
-  return out;
-}
 
 // ---------- music helpers (separate menu / in-game volumes) ----------
 const menuVol = () => { const v = parseFloat(localStorage.getItem("fn_menu_vol") ?? "0.7"); return isNaN(v) ? 0.7 : v; };
@@ -811,29 +782,21 @@ function katanaTick(now) {
   }
   octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
   drawKatanaPreview(katCand);
-  if (objectBlade.lastSeen) drawBladeOnPip(objectBlade.lastSeen, video);
+  if (objectBlade.lastSeen) drawTipOnPip(objectBlade.lastSeen, video);
 }
 
-// Dots along the detected blade, mapped onto a camera element. Same white light the
-// game uses, so what shows on the feed is exactly what cuts.
-function drawBladeOnPip(ends, videoEl) {
+// The tracked tip, drawn on the camera feed — the "is it mapped?" readout. Same white
+// light the game draws, so the PiP shows exactly what is driving the blade.
+function drawTipOnPip(p, videoEl) {
+  if (!p || !videoEl) return;
   const rect = videoEl.getBoundingClientRect();
   if (rect.width < 4) return;
   const vw = videoEl.videoWidth || 1280, vh = videoEl.videoHeight || 720;
-  const a = mapToCam(ends[0].x, ends[0].y, rect, vw, vh);
-  const b = mapToCam(ends[1].x, ends[1].y, rect, vw, vh);
+  const a = mapToCam(p.x, p.y, rect, vw, vh);
   octx.save();
-  octx.lineCap = "round";
-  octx.strokeStyle = "rgba(255,250,230,0.55)"; octx.lineWidth = 2;
-  octx.beginPath(); octx.moveTo(a.x, a.y); octx.lineTo(b.x, b.y); octx.stroke();
-  octx.shadowColor = "rgba(255, 210, 74, 0.95)"; octx.fillStyle = "#fff6d8";
-  for (let i = 0; i <= 5; i++) {
-    const k = i / 5;
-    octx.shadowBlur = 12;
-    octx.beginPath();
-    octx.arc(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, i === 5 ? 7 : 3.5, 0, Math.PI * 2);
-    octx.fill();
-  }
+  octx.shadowColor = "rgba(255, 210, 74, 0.95)"; octx.shadowBlur = 14;
+  octx.fillStyle = "#fff6d8";
+  octx.beginPath(); octx.arc(a.x, a.y, 7, 0, Math.PI * 2); octx.fill();
   octx.restore();
 }
 
@@ -844,8 +807,8 @@ function drawKatanaPreview(cand) {
   octx.save();
   octx.lineCap = "round";
   if (cand) {
-    const g = mapToCam(cand.gripNorm.x, cand.gripNorm.y, rect, vw, vh);
     const t = mapToCam(cand.tipNorm.x, cand.tipNorm.y, rect, vw, vh);
+    const g = t;
     octx.shadowColor = "#8fe3ff"; octx.shadowBlur = 18;
     octx.strokeStyle = "#8fe3ff"; octx.lineWidth = 6;
     octx.beginPath(); octx.moveTo(g.x, g.y); octx.lineTo(t.x, t.y); octx.stroke();
@@ -1019,45 +982,37 @@ function tick(now) {
       // reused purely as presence bookkeeping so the lost-hint and the fruit slowdown
       // keep working unchanged; it holds no landmarks here.
       const ob = objectBlade.update(video, dtMs);
-      bladeSeen = ob ? ob.endsNorm : null;
+      bladeSeen = ob ? [ob.tipNorm, ob.tipNorm] : null;
       bladeConf = ob ? (ob.conf ?? 1) : 0;
       if (KATDEBUG) {
         katDebugCapture(now);
         if (now - lastKatLog > 250) {
           lastKatLog = now;
           console.log("[kat] " + JSON.stringify(ob
-            ? { found: 1, deg: +(ob.angle * 180 / Math.PI).toFixed(1), conf: +(ob.conf || 0).toFixed(2),
-                ends: ob.endsNorm.map((e) => [+e.x.toFixed(3), +e.y.toFixed(3)]) }
-            : { found: 0 }));
+            ? { found: 1, conf: +(ob.conf || 0).toFixed(2),
+                tip: [+ob.tipNorm.x.toFixed(3), +ob.tipNorm.y.toFixed(3)],
+                rebuilds: objectBlade.rebuilds }
+            : { found: 0, rebuilds: objectBlade.rebuilds }));
         }
       }
-      updateLock(mainLock, ob ? { x: ob.gripNorm.x, y: ob.gripNorm.y, lm: null } : null);
+      updateLock(mainLock, ob ? { x: ob.tipNorm.x, y: ob.tipNorm.y, lm: null } : null);
       if (ob) {
-        // Map the REAL endpoints — each one individually through mapPoint, never one
-        // point plus a rotated offset, or the mirror breaks the geometry.
-        const rawG = mapPoint(ob.endsNorm[0].x, ob.endsNorm[0].y);
-        const rawT = mapPoint(ob.endsNorm[1].x, ob.endsNorm[1].y);
-        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); tipFX.reset(); tipFY.reset(); bladeSamplesPrev = null; }
+        // The tip is a single point, so it goes through exactly the path the index
+        // fingertip takes in solo mode: map, smooth, one slice segment, one white light.
+        const raw = mapPoint(ob.tipNorm.x, ob.tipNorm.y);
+        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; }
         misses = 0;
-        const cur = { x: cursorFX.filter(rawG.x, freq), y: cursorFY.filter(rawG.y, freq) };
-        const tip = { x: tipFX.filter(rawT.x, freq), y: tipFY.filter(rawT.y, freq) };
-        bladeLine = clampBlade(cur, tip);
-        const samples = bladeSamples(bladeLine);
-        // One segment per point along the blade — Game gates each on its own speed.
-        if (bladeSamplesPrev) {
-          segment = samples.map((b, i) =>
-            ({ a: bladeSamplesPrev[i], b, speed: bladeSpeed(bladeSamplesPrev[i], b, dtMs) }));
-        }
-        bladeSamplesPrev = samples;
-        trail.push({ x: bladeLine.tip.x, y: bladeLine.tip.y, t: now });
+        const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
+        if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
+        trail.push({ x: cur.x, y: cur.y, t: now });
         bladePrev = cur; bladeCur = cur;
       } else {
         misses++;
-        if (misses <= COAST_FRAMES && bladeLine) trail.push({ x: bladeLine.tip.x, y: bladeLine.tip.y, t: now });
-        else {
-          cursorFX.reset(); cursorFY.reset(); tipFX.reset(); tipFY.reset();
+        if (misses <= COAST_FRAMES && bladeCur) {
+          trail.push({ x: bladeCur.x, y: bladeCur.y, t: now });
+        } else {
+          cursorFX.reset(); cursorFY.reset();
           bladePrev = null; bladeCur = null;
-          bladeLine = null; bladeSamplesPrev = null;
         }
       }
       updateHandHint(now);
@@ -1228,16 +1183,10 @@ function drawOverlay(now) {
   if (showSkeleton && lastResult.present) drawSkeleton(lastResult.landmarks);
   if (mode === "versus") drawOppTrail(now);
   drawTrail(now);
-  if (bladeMode === "object" && bladeLine) {
-    // Same white fingertip light as hand mode, one per cutting point along the blade —
-    // biggest at the tip so it reads as a blade rather than a row of dots.
-    const pts = bladeSamples(bladeLine);
-    for (let i = 0; i < pts.length - 1; i++) drawTip(pts[i], 5 + i);
-    drawTip(bladeLine.tip, 11);
-  } else drawTip(bladeCur);
+  drawTip(bladeCur);
   // The blade as the camera sees it, drawn on the PiP — the "is it mapped?" readout,
   // and the object-mode equivalent of the hand skeleton.
-  if (bladeMode === "object" && bladeSeen) drawBladeOnPip(bladeSeen, $("webcam"));
+  if (bladeMode === "object" && bladeSeen) drawTipOnPip(bladeSeen[0], $("webcam"));
   if (inActiveGame() && mainLock.present && mainLock.landmarks)
     drawHandOnPip(mainLock.landmarks, $("webcam"), "rgba(255,236,180,0.7)", "#ffd24a");
 }
