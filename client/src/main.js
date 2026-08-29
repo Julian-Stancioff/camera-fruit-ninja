@@ -44,6 +44,7 @@ const objectBlade = new ObjectBlade();
 let katGate = null, katCand = null;
 let bladeLine = null;            // {grip, tip} in screen px, object mode only
 let bladeSeen = null;            // the blade as detected, normalized cam coords, for the PiP
+let bladeConf = 1;               // detector confidence; low means we are coasting on prediction
 let bladeSamplesPrev = null;     // previous frame's sample points along the blade
 let paused = false, pauseStart = 0;       // pause / quit-to-menu
 const oppTrail = [];
@@ -97,6 +98,10 @@ function loadSettings() {
 function saveSettings() { localStorage.setItem("fn_settings", JSON.stringify(settings)); }
 // More smoothing → lower cutoff + lower beta (smoother, slightly more lag).
 function smoothingParams(s) { return { minCutoff: lerp(2.0, 0.8, s), beta: lerp(0.045, 0.004, s) }; }
+// Object mode feeds an already-stabilised blade through these filters, so smoothing it as
+// heavily as a raw fingertip only buys lag. A much larger beta lets a swing through while
+// leaving a resting blade just as steady.
+function objectSmoothing(s) { const p = smoothingParams(s); return { minCutoff: p.minCutoff, beta: p.beta * 6 }; }
 
 const settings = loadSettings();
 let GAIN_X = settings.sensitivity, GAIN_Y = settings.sensitivity;
@@ -123,6 +128,12 @@ const cursorFX = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 const cursorFY = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 // Object mode tracks a full segment: the grip runs through cursorFX/FY above, the tip
 // through its own pair — both ends smoothed, or the blade jitters end-over-end.
+// Push the current smoothing settings into the live filters, using the livelier
+// object-mode curve while a physical blade is driving them.
+function applySmoothing() {
+  const p = bladeMode === "object" ? objectSmoothing(settings.smoothing) : smoothingParams(settings.smoothing);
+  for (const f of [cursorFX, cursorFY, tipFX, tipFY]) { f.minCutoff = p.minCutoff; f.beta = p.beta; }
+}
 const tipFX = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 const tipFY = new OneEuroFilter(30, _sp.minCutoff, _sp.beta);
 
@@ -280,6 +291,7 @@ async function start() {
     overlay.classList.add("overlay-top"); // keep trail + PiP hand-mapping above the camera PiP
     if (DEBUG) $("hud").hidden = false; // dev HUD only with ?debug
     running = true;
+    startVideoFrames();
     startLoop();
 
     // Route to mode select, or auto-join a shared link (?join=CODE).
@@ -578,6 +590,7 @@ function backToMenu() {
   exitKatana();
   mode = "solo";
   bladeMode = "hand";
+  applySmoothing();
   $("gameover").hidden = true;
   $("again-btn").textContent = "Play again";
   $("menu-btn").hidden = true;
@@ -739,6 +752,7 @@ function handleSplitHands(result, now, dtMs, freq) {
 // orientation on the frames where a mirror-finish blade vanishes into the background.
 function startKatana() {
   bladeMode = "object";
+  applySmoothing();
   $("mode-screen").hidden = true;
   objectBlade.reset();
   objectBlade.load();      // seed with the last approved object, if any
@@ -946,6 +960,28 @@ function drawReadyDots(result) {
 // rAF render loop → smooth 60fps fruit + trail. Hand detection runs only on a new
 // camera frame (~30fps) via the currentTime guard inside tick(), so the game never
 // looks choppy even though the camera is 30fps.
+// requestVideoFrameCallback fires when a camera frame is actually presented, and hands
+// back its timing. That is strictly better than watching video.currentTime from inside the
+// rAF loop: no frame is ever missed or processed twice, and metadata.presentationTime tells
+// us how stale the frame already is when we get it — the pipeline latency that makes a fast
+// blade trail. Falls back to the currentTime check where the API is missing.
+let vfcPending = false, vfcLatency = 0, lastVfc = 0;
+function startVideoFrames() {
+  if (!video.requestVideoFrameCallback) return;
+  const onFrame = (now, meta) => {
+    vfcPending = true;
+    lastVfc = now;
+    if (meta && meta.presentationTime) vfcLatency = Math.max(0, Math.min(150, now - meta.presentationTime));
+    video.requestVideoFrameCallback(onFrame);
+  };
+  video.requestVideoFrameCallback(onFrame);
+}
+// If the callback ever stops arriving — a paused element, a swapped stream, a browser
+// quirk — detection would silently never run again and the game would look frozen. Fall
+// back to the old currentTime check rather than trusting one API to keep firing.
+function vfcHealthy(now) { return !!video.requestVideoFrameCallback && now - lastVfc < 500; }
+window.__katLatency = () => vfcLatency;
+
 function startLoop() {
   const onRaf = (now) => { if (!running) return; tick(now); requestAnimationFrame(onRaf); };
   requestAnimationFrame(onRaf);
@@ -967,7 +1003,11 @@ function tick(now) {
   }
 
   let segment = null, splitSegLeft = null, splitSegRight = null;
-  if (injectedResult || (video.readyState >= 2 && video.currentTime !== lastVideoTime)) {
+  const freshFrame = vfcHealthy(now)
+    ? vfcPending
+    : (video.readyState >= 2 && video.currentTime !== lastVideoTime);
+  if (injectedResult || (video.readyState >= 2 && freshFrame)) {
+    vfcPending = false;
     lastVideoTime = video.currentTime;
     const dtMs = lastDetectTs ? now - lastDetectTs : 33;
     const freq = dtMs > 0 ? 1000 / dtMs : 30;
@@ -980,6 +1020,7 @@ function tick(now) {
       // keep working unchanged; it holds no landmarks here.
       const ob = objectBlade.update(video, dtMs);
       bladeSeen = ob ? ob.endsNorm : null;
+      bladeConf = ob ? (ob.conf ?? 1) : 0;
       if (KATDEBUG) {
         katDebugCapture(now);
         if (now - lastKatLog > 250) {
@@ -1131,10 +1172,9 @@ function wireSettings() {
     settings.sensitivity = GAIN_X; saveSettings(); upd();
   };
   smooth.oninput = () => {
-    const sp = smoothingParams(parseFloat(smooth.value));
-    cursorFX.minCutoff = cursorFY.minCutoff = tipFX.minCutoff = tipFY.minCutoff = sp.minCutoff;
-    cursorFX.beta = cursorFY.beta = tipFX.beta = tipFY.beta = sp.beta;
-    settings.smoothing = parseFloat(smooth.value); saveSettings(); upd();
+    settings.smoothing = parseFloat(smooth.value);
+    applySmoothing();
+    saveSettings(); upd();
   };
   const bladeEl = $("set-blade");
   const updBlade = () => { $("set-blade-val").textContent = `${Math.round(settings.bladeLen * 100)}%`; };
