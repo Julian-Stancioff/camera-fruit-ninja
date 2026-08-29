@@ -14,11 +14,12 @@ import * as detector from "./detectTip.js";
 
 const SCAN_W = 192;
 const STABLE_FRAMES = 3;    // agreeing frames before we hand a candidate to the caller
-// A lock that is lost and never comes back is the worst failure this feature has: the
-// player is left waving a sword at a dead screen. After this long with nothing, throw the
-// background model away and start it over — whatever it learned is clearly wrong, most
-// likely the blade itself having been absorbed while it sat still.
-const REBUILD_AFTER_MS = 2500;
+// NO WATCHDOG REBUILD. An earlier version threw the background model away after a dry
+// spell, but re-enrolling learns the CURRENT frame as background — sword included — so the
+// blade became furniture, detection stayed dead, and it fired again moments later: a doom
+// loop that made tracking far worse than the dry spell it was meant to cure. The ?tipprobe
+// harness, which followed the blade well on the real camera, enrolls once and never resets.
+// This mirrors it exactly.
 
 export class TipBlade {
   constructor() {
@@ -54,18 +55,6 @@ export class TipBlade {
     }
   }
 
-  /** Watchdog: a long silence means the model is wrong, so rebuild it from scratch. */
-  _watchdog(now, found) {
-    if (found) { this.lostSince = 0; return; }
-    if (!this.lostSince) { this.lostSince = now; return; }
-    if (now - this.lostSince > REBUILD_AFTER_MS) {
-      this.model = null;       // next frame re-enrols, relearning the room from zero
-      this.prev = null;
-      this.lostSince = 0;
-      this.rebuilds++;
-    }
-  }
-
   /** Enrolment screen: hand back a tip once the same one shows up a few frames running. */
   scan(video) {
     const f = this._grab(video);
@@ -73,7 +62,6 @@ export class TipBlade {
     if (!this.model) this.model = detector.enroll([f.pixels], f.SW, f.SH);
     const hit = detector.detect(f.pixels, f.SW, f.SH, this.model, this.prev);
     this.prev = hit;
-    this._watchdog(performance.now(), !!hit);
     if (!hit) { this.stable = 0; this.lastSeen = null; return null; }
     this.stable++;
     this.lastSeen = { x: hit.x / f.SW, y: hit.y / f.SH };
@@ -100,7 +88,6 @@ export class TipBlade {
     if (!this.model) this.model = detector.enroll([f.pixels], f.SW, f.SH);
     const hit = detector.detect(f.pixels, f.SW, f.SH, this.model, this.prev);
     this.prev = hit;
-    this._watchdog(performance.now(), !!hit);
     if (!hit) { this.lastSeen = null; return null; }
     this.lastSeen = { x: hit.x / f.SW, y: hit.y / f.SH };
     return { tipNorm: this.lastSeen, conf: hit.quality };

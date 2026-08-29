@@ -748,7 +748,7 @@ function startKatana() {
 $("mode-katana").addEventListener("click", startKatana);
 
 function enterKatana() {
-  katGate = { locked: false };
+  katGate = { locked: false, warmUntil: performance.now() + 1800 };
   katCand = null;
   const p = video.play && video.play();
   if (p && p.catch) p.catch(() => {});
@@ -758,8 +758,8 @@ function enterKatana() {
   overlay.classList.add("overlay-top");
   objectBlade.rescan();
   $("kat-actions").hidden = true;
-  $("kat-status").textContent = "Hold your blade up \u2694";
-  $("kat-sub").textContent = "Looking for it\u2026";
+  $("kat-status").textContent = "Keep the sword DOWN for a second";
+  $("kat-sub").textContent = "learning your room\u2026";
   $("katana-screen").hidden = false;
 }
 
@@ -772,6 +772,18 @@ function exitKatana() {
 }
 
 function katanaTick(now) {
+  // Learn the room with the sword OUT of frame first. The detector finds the blade by
+  // what is NOT background, so if it is already raised while the background is being
+  // learned it gets absorbed and becomes invisible. The ?tipprobe harness that tracked
+  // well happened to do this — it counted down before it started looking — and that is
+  // most of why it worked.
+  if (now < katGate.warmUntil) {
+    if (video.readyState >= 2) objectBlade.scan(video);
+    const left = Math.ceil((katGate.warmUntil - now) / 1000);
+    $("kat-sub").textContent = `learning your room\u2026 ${left}`;
+    octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    return;
+  }
   if (!katGate.locked && video.readyState >= 2) {
     // scan() buffers frames and only commits once it has seen enough movement — the
     // wave is what separates the blade from every other long edge in the room.
@@ -785,7 +797,8 @@ function katanaTick(now) {
       startSolo();
       return;
     } else {
-      $("kat-sub").textContent = "Point it up, clear of your body";
+      $("kat-status").textContent = "Now raise the sword \u2694";
+      $("kat-sub").textContent = "Hold it up, clear of your body";
     }
   }
 
@@ -1015,10 +1028,13 @@ function tick(now) {
       if (ob) {
         // The tip is a single point, so it goes through exactly the path the index
         // fingertip takes in solo mode: map, smooth, one slice segment, one white light.
-        const raw = mapPoint(ob.tipNorm.x, ob.tipNorm.y, OBJECT_GAIN);
-        if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; }
+        // Straight through, exactly like the ?tipprobe harness that tracked the blade
+        // well on the real camera: map 1:1 and use the point as-is. The detector already
+        // deadbands and coasts internally, and stacking a 1-euro filter on top of that was
+        // adding lag without adding steadiness.
+        const cur = mapPoint(ob.tipNorm.x, ob.tipNorm.y, OBJECT_GAIN);
+        if (misses >= 2) bladePrev = null;
         misses = 0;
-        const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };
         if (bladePrev) segment = { a: bladePrev, b: cur, speed: bladeSpeed(bladePrev, cur, dtMs) };
         trail.push({ x: cur.x, y: cur.y, t: now });
         bladePrev = cur; bladeCur = cur;
