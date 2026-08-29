@@ -283,8 +283,132 @@ console.log("== 3. FAST SWING (+-70deg about a low pivot, ~3.9deg/frame) ==");
   const angs = hits.map((s) => axisDeg(s.r.angle, s.pose.angle));
   const rate = hits.length / sw.length;
   console.log(`  tracked ${(100 * rate).toFixed(1)}%  angle err med ${n1(med(angs))}deg worst ${n1(mx(angs))}deg`);
-  check("swing", rate >= 0.85, `tracked ${(100 * rate).toFixed(1)}% < 85%`);
+  check("swing", rate >= 0.95, `tracked ${(100 * rate).toFixed(1)}% < 95%`);
   check("swing", med(angs) <= 6, `median angle err ${n1(med(angs))}deg > 6deg`);
+  // The old worst was 89.7deg — a junk line perpendicular to the blade captured the
+  // lock while the blade sat in a contrast-dead pose. That is the "glitch" the
+  // rotation/translation handover gates exist to kill; keep them honest.
+  check("swing", mx(angs) <= 35, `worst angle err ${n1(mx(angs))}deg > 35deg`);
+}
+
+// ------------------------------------------------------------------ 3b. motion blur
+// The physical reality the sharp-bar swing skips: a katana swung fast smears across
+// 10-25px of tip travel in one 33ms exposure. Render the blade at 7 sub-angles
+// across the exposure and average the coverage — the bar becomes wide, faint and
+// soft-edged, exactly what weakens the valley response mid-swing. Blur scales with
+// instantaneous angular speed (zero at the stroke reversals), normalized so PEAK
+// tip smear equals the stated length.
+
+const COV = new Float32Array(W * H);
+function blurFrame(seed, k, px, py, angMid, angSpan, len, wSword) {
+  const p = FRAME;
+  p.set(ROOM);
+  COV.fill(0);
+  const S = 7;
+  for (let s = 0; s < S; s++) {
+    const a = angMid + angSpan * (s / (S - 1) - 0.5);
+    const dx = Math.cos(a), dy = Math.sin(a);
+    const cx = px + (len / 2) * dx, cy = py + (len / 2) * dy;
+    const h = len / 2, hw = wSword / 2, r = Math.ceil(h + hw) + 1;
+    for (let y = Math.max(0, (cy - r) | 0); y <= Math.min(H - 1, (cy + r) | 0); y++) {
+      for (let x = Math.max(0, (cx - r) | 0); x <= Math.min(W - 1, (cx + r) | 0); x++) {
+        const u = (x - cx) * dx + (y - cy) * dy, v = -(x - cx) * dy + (y - cy) * dx;
+        if (Math.abs(u) <= h && Math.abs(v) <= hw) COV[y * W + x] += 1 / S;
+      }
+    }
+  }
+  for (let i = 0; i < W * H; i++) {
+    const c = COV[i];
+    if (c > 0) {
+      const j = i * 4, y = (i / W) | 0;
+      const cc = c > 1 ? 1 : c;
+      const l = p[j] * (1 - cc) + swordLuma(y) * cc;
+      p[j] = p[j + 1] = p[j + 2] = l;
+    }
+  }
+  const rnd = rng(seed + k * 7919);
+  for (let i = 0; i < W * H; i++) {
+    const gN = (rnd() * 2 - 1) * 5;
+    const j = i * 4;
+    p[j] += gN; p[j + 1] += gN; p[j + 2] += gN;
+  }
+  return p;
+}
+
+// Test-3 geometry: +-70deg sine about the (90,65) pivot, len 74, over n frames.
+// blurPx: peak tip smear per exposure; null = full-shutter blur matched to the
+// ACTUAL inter-frame motion (the physically honest case).
+function runBlurSwing({ n, blurPx, seed }) {
+  const PX = 90, PY = 65, LEN = 74, UP = rad(-90);
+  const angAt = (f) => UP + rad(70) * Math.sin(2 * Math.PI * f);
+  const upPose = pivotPose(PX, PY, UP, LEN);
+  const model = enroll([makeFrame(seed, 0, null, 0)], W, H);
+  let prev = null, k = 0;
+  for (const ph of [raiseInto(upPose), { name: "pre", n: 20, poseAt: () => upPose }]) {
+    for (let i = 0; i < ph.n; i++, k++) {
+      prev = detect(makeFrame(seed, k, ph.poseAt(ph.n > 1 ? i / (ph.n - 1) : 0), 2), W, H, model, prev) || null;
+    }
+  }
+  const out = [];
+  for (let i = 0; i < n; i++, k++) {
+    const f = i / (n - 1);
+    const aM = angAt(f);
+    const span = blurPx != null
+      ? (blurPx / LEN) * Math.abs(Math.cos(2 * Math.PI * f))       // blur ∝ speed
+      : Math.abs(aM - angAt((i - 1) / (n - 1)));                    // full shutter
+    const p = blurFrame(seed, k, PX, PY, aM, span, LEN, 2);
+    const r = detect(p, W, H, model, prev);
+    prev = r || null;
+    out.push({ r, angle: aM });
+  }
+  return out;
+}
+
+console.log("== 3b. FAST SWING + MOTION BLUR (peak tip smear per 33ms exposure) ==");
+{
+  // The physical ceiling, stated plainly: a 2px blade at 45 luma contrast smeared
+  // across 16px drops to ~6 luma of tip signal — BELOW the 5-luma sensor grain. No
+  // detector sees that tip; only the inner half (blur scales with radius) remains
+  // measurable, and both stroke reversals of this geometry park the sharp blade in
+  // contrast-dead clutter. So 8px blur is expected to track nearly clean, and 16px+
+  // to hold partial lock via the visible inner stub, dead-reckoning, and honest
+  // misses. The asserts are regression guards at the measured level, not claims
+  // that heavy blur is solved.
+  for (const B of [8, 16, 24]) {
+    const res = runBlurSwing({ n: 72, blurPx: B, seed: 71 + B });
+    const hits = res.filter((s) => s.r);
+    const angs = hits.map((s) => axisDeg(s.r.angle, s.angle));
+    let worstGap = 0, gap = 0;
+    for (const s of res) { gap = s.r ? 0 : gap + 1; if (gap > worstGap) worstGap = gap; }
+    const rate = hits.length / res.length;
+    console.log(`  blur ${String(B).padStart(2)}px  tracked ${(100 * rate).toFixed(1)}%` +
+      `  angle err med ${n1(med(angs))}deg worst ${n1(mx(angs))}deg  worst miss gap ${worstGap}`);
+    if (B === 8) {
+      check("blur8", rate >= 0.85, `tracked ${(100 * rate).toFixed(1)}% < 85%`);
+      check("blur8", med(angs) <= 6, `median angle err ${n1(med(angs))}deg > 6deg`);
+    }
+    if (B === 16) check("blur16", rate >= 0.55, `tracked ${(100 * rate).toFixed(1)}% < 55%`);
+    if (B === 24) check("blur24", rate >= 0.30, `tracked ${(100 * rate).toFixed(1)}% < 30%`);
+  }
+}
+
+console.log("== 3c. DOUBLE-RATE SWING (+-70deg in half the frames, ~12deg/frame peak, full-shutter blur) ==");
+{
+  const res = runBlurSwing({ n: 36, blurPx: null, seed: 83 });
+  const hits = res.filter((s) => s.r);
+  const angs = hits.map((s) => axisDeg(s.r.angle, s.angle));
+  let worstGap = 0, gap = 0;
+  for (const s of res) { gap = s.r ? 0 : gap + 1; if (gap > worstGap) worstGap = gap; }
+  const rate = hits.length / res.length;
+  console.log(`  tracked ${(100 * rate).toFixed(1)}%  angle err med ${n1(med(angs))}deg worst ${n1(mx(angs))}deg  worst miss gap ${worstGap}`);
+  // Honest limit: at ~12deg/frame under a full 33ms shutter the smear is 10-16px on
+  // most frames, so per-frame angle measurements are stub-based and LAG the blade;
+  // the median error here is mostly that lag plus one wrong-line stretch while the
+  // blade crossed its contrast-dead reversal blind. The report stays continuous
+  // (gap <= 2) — for gameplay that reads as the blade trailing a hard swing, not
+  // losing it.
+  check("dblrate", rate >= 0.80, `tracked ${(100 * rate).toFixed(1)}% < 80%`);
+  check("dblrate", worstGap <= 4, `worst miss gap ${worstGap} > 4 frames`);
 }
 
 // ------------------------------------------------------------------ 4. still-swing-still
@@ -303,8 +427,9 @@ console.log("== 4. STILL -> SWING -> STILL ==");
   };
   let worstGap = 0, gap = 0;
   for (const s of res.slice(12)) { gap = s.r ? 0 : gap + 1; if (gap > worstGap) worstGap = gap; }
-  // steady-state window: after a swing the held ends re-extend through the growth
-  // cap (6px/frame) and the coast, ~1s of deliberate smoothing before they settle
+  // steady-state window: after a swing the held ends re-extend through the
+  // (speed-adaptive) growth cap and the coast, ~1s of deliberate smoothing before
+  // they settle
   const s2 = res.filter((s) => s.phase === "still2").slice(30);
   const moves = [];
   for (let i = 1; i < s2.length; i++) if (s2[i].r && s2[i - 1].r) moves.push(endMove(s2[i - 1].r, s2[i].r));
@@ -312,9 +437,11 @@ console.log("== 4. STILL -> SWING -> STILL ==");
     `  still2 ${(100 * rateOf("still2", 10)).toFixed(1)}%  worst miss gap ${worstGap} frames` +
     `  still2 end move med ${n2(med(moves))}px worst ${n2(mx(moves))}px`);
   check("phases", rateOf("still1", 12) >= 0.97, `still1 lock ${(100 * rateOf("still1", 12)).toFixed(1)}% < 97%`);
-  check("phases", rateOf("swing") >= 0.6, `swing lock ${(100 * rateOf("swing")).toFixed(1)}% < 60%`);
+  // 95%, up from the 60% this assert was first written against: holding the lock
+  // through the swing is the whole point of the velocity/coasting work.
+  check("phases", rateOf("swing") >= 0.95, `swing lock ${(100 * rateOf("swing")).toFixed(1)}% < 95%`);
   check("phases", rateOf("still2", 10) >= 0.95, `still2 lock ${(100 * rateOf("still2", 10)).toFixed(1)}% < 95%`);
-  check("phases", worstGap <= 8, `lost the lock for ${worstGap} consecutive frames`);
+  check("phases", worstGap <= 4, `lost the lock for ${worstGap} consecutive frames`);
   // worst move includes the re-acquisition frames right after the swing lands back
   // in the pose; median is the steady-state figure.
   check("phases", med(moves) <= 1.0, `still2 median end move ${n2(med(moves))}px > 1px`);

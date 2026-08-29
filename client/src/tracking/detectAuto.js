@@ -42,6 +42,34 @@
 //      1.5px of measured change they barely move (a slow creep). Motion is only a
 //      TIEBREAKER (max 2x, > the 1.5x lock boost by design), so a genuinely swinging
 //      blade can always break a wrongly-latched static lock, but sensor grain cannot.
+//
+// Real-katana testing then exposed the OPPOSITE failure: everything tuned for the
+// held-still case (deadband, extent caps, same-line tolerance, stranger refusal)
+// starved a fast swing — 62.5% lock mid-swing, with 90deg "glitch" frames where a
+// junk line captured the lock while the blade crossed a contrast-dead pose. Three
+// mechanisms fix that without giving the stillness back:
+//
+//   3. SPEED ADAPTIVITY (the 1-euro-filter idea). The lock tracks its endpoints'
+//      measured velocity; the LATERAL component (EMA'd) is the swing-speed signal —
+//      axial endpoint jumps are support fragments flickering, not motion. Every
+//      stillness clamp opens with that speed, the same-line test also accepts the
+//      velocity-PREDICTED line, and a missed frame dead-reckons the lock as a RIGID
+//      body (translate + rotate, never shrink) for up to COAST_MAX frames, so a
+//      blurred or contrast-dead frame does not drop the game's blade. A replacement
+//      lock inherits the outgoing lock's damped velocity — same physical blade.
+//   4. HANDOVER GATES. A non-incumbent winner must be physically reachable from the
+//      last CONFIDENT axis (rotation-rate cap, allowance growing with time unseen
+//      and with the speed last measured) and from the lock's position (translation
+//      cap) — junk light picked up while the blade is invisible fails both, which
+//      is what killed the perpendicular-flip glitches. A heavily MOVING challenger
+//      (score >= 1.7x support) bypasses the gates: a real swing must still be able
+//      to break a wrongly-latched static lock.
+//   5. A SLOW SIGNED ROOM MEMORY (bgS, ~20s EMA, vanish-proof). A motion-blurred
+//      blade occludes furniture with per-pixel luma deltas too small for MOVE_T,
+//      the vanish rule then forgets that furniture, and on return it fed ghost
+//      lines for ~10s of BG_UP. A pixel returning to the level AND polarity it has
+//      long held is re-learned fast — outside the lock's band only, because a dark
+//      blade over a remembered dark valley is indistinguishable from the valley.
 export const NAME = "auto";
 
 // Probe distances, in px at 192 wide. MULTI-SCALE on purpose: a blade held at arm's
@@ -123,6 +151,16 @@ const MOVE_T = 8;           // |luma delta| above this = the pixel is MOVING and
                             // them, and the visible run is truncated forever after.
 const DEAD = 1.5;           // endpoint deadband, px: measured wobble under this is grain
 const PULL_FULL = 8;        // px of measured change at which endpoints snap 1:1
+const VEL_REF = 10;         // endpoint speed (px/frame) at which the adaptive limits are fully
+                            // open. The stillness clamps (deadband, extent caps, lock-line
+                            // tolerance, stranger refusal) scale between their hard held-still
+                            // value at speed 0 and wide open at VEL_REF — the 1-euro-filter
+                            // idea: the clamps that give 0.06px endpoints at rest are exactly
+                            // what starved a fast swing, measured at 62.5% lock mid-swing.
+const COAST_MAX = 4;        // missed frames bridged by dead-reckoning a MOVING lock before the
+                            // report actually drops: one blurred/contrast-dead frame must not
+                            // cost the game its blade. Bounded well under MISS_MAX, and only
+                            // for a lock carrying real measured (or inherited) velocity.
 
 /** Scratch buffers live on the model so nothing is allocated per frame. */
 function buffers(model, SW, SH) {
@@ -135,8 +173,12 @@ function buffers(model, SW, SH) {
     model.thin = new Uint8Array(n);   // responder fired at a narrow probe (fresh where ev>0)
     model.pol = new Uint8Array(n);    // responder polarity: 1 bright ridge, 2 dark valley
     model.bg = new Float32Array(n);
+    model.bgS = new Float32Array(n); // slow room memory (~20s EMA), never crashed by
+                                     // the vanish rule: what this pixel has LONG held
     model.bgN = 0;
     model.lock = null;                // {t, r, e0, e1, miss} — survives caller resets
+    model.ax = null;                  // confident axis: {t, n} — theta of the last lock
+                                      // confirmed at age>=BAND_AGE, n frames since
     model.xs = new Int16Array(n);
     model.ys = new Int16Array(n);
     model.sup = new Uint8Array(2 * (SW + SH) + 8);
@@ -186,16 +228,27 @@ function sameLine(t1, r1, t2, r2, rho0, dtMax, drMax) {
 }
 
 // Endpoint deadband: under DEAD px of measured change the reported end does not move
-// (grain), past PULL_FULL it snaps 1:1 (a real swing), in between it blends.
-function pull(h, m) {
+// (grain), past PULL_FULL it snaps 1:1 (a real swing), in between it blends. sp is
+// the lock's speed factor (0 still .. 1 fast): the deadband closes as speed rises,
+// because at speed every px of measured change is real motion, not grain.
+function pull(h, m, sp) {
   const dx = m[0] - h[0], dy = m[1] - h[1], d = Math.hypot(dx, dy);
   // Below the deadband: a slow creep toward the measurement, not a hard freeze. A
   // hard freeze preserves whatever sub-deadband error the lock was born with forever
   // (a 1.4px tilt on a 22px segment is 7deg, permanently). 0.06/frame is invisible
   // (<0.1px) and converges a systematic offset in about a second.
-  const f = d < DEAD ? 0.06 : Math.min(1, d / PULL_FULL);
+  const f = d < DEAD * (1 - sp) ? 0.06 : Math.min(1, d / PULL_FULL);
   h[0] += dx * f;
   h[1] += dy * f;
+}
+
+// Line (theta bin, rho index) through two points — used to re-derive the lock line
+// from dead-reckoned endpoints.
+function lineFromEnds(e0, e1, rho0) {
+  const na = Math.atan2(e1[1] - e0[1], e1[0] - e0[0]) + Math.PI / 2;
+  const t = Math.round((((na % Math.PI) + Math.PI) % Math.PI) / (Math.PI / NTH)) % NTH;
+  const r = Math.round(((e0[0] + e1[0]) / 2) * COS[t] + ((e0[1] + e1[1]) / 2) * SIN[t]) + rho0;
+  return [t, r];
 }
 
 // Learn the room from this frame's raw response, minus the band around the blade.
@@ -212,8 +265,15 @@ function pull(h, m) {
 // on the synthetic room: 25% of the frame stayed lit as "evidence" with the
 // unconditional fall, 0.1% with this rule.
 function learnBg(model, SW, SH, band) {
-  const { resp, bg, lum, prevLum, pol } = model;
+  const { resp, bg, bgS, lum, prevLum, pol } = model;
   const up = Math.max(BG_UP, 1 / (model.bgN + 1));
+  const upS = Math.max(1 / 600, 1 / (model.bgN + 1));
+  // Recovery below only once bgS genuinely means LONG-known (~1s of frames): with
+  // the cold ramp the whole room is "known" after two frames, and recovery then
+  // acted as fast clutter learning during warm-up — cleaning the field so quickly
+  // that the strongest not-yet-learned clutter line stood alone and got locked,
+  // exactly what the glut gate and probation exist to prevent.
+  const mature = model.bgN >= 30;
   const dx = band ? Math.cos(band.angle) : 0, dy = band ? Math.sin(band.angle) : 0;
   for (let y = 0, i = 0; y < SH; y++) {
     for (let x = 0; x < SW; x++, i++) {
@@ -221,19 +281,46 @@ function learnBg(model, SW, SH, band) {
       // a raised or swung blade (and the player) out of bg entirely; the vanish-fall
       // below simply lands one frame later, once the pixel has settled.
       if (prevLum) { const dm = lum[i] - prevLum[i]; if (dm > MOVE_T || dm < -MOVE_T) continue; }
+      let inBand = false, inGeo = false;
+      if (band) {
+        const ax = x - band.cx, ay = y - band.cy;
+        const u = ax * dx + ay * dy, v = ax * dy - ay * dx;
+        inGeo = u < band.hu && u > -band.hu && v < BG_PAD_V && v > -BG_PAD_V;
+        inBand = inGeo && resp[i] > MIN_RESP && pol[i] === band.pol;
+      }
+      // Slow room memory, SIGNED by polarity (ridge positive, valley negative —
+      // resp alone is magnitude, and a dark blade crossing a bright bed-fold reads
+      // as the same magnitude the fold always had). Frozen across the band's whole
+      // GEOMETRY (a held blade must never enter it, marginal edge pixels included),
+      // and immune to the vanish crash, so it remembers what a pixel held even
+      // through an occlusion.
+      const sr = pol[i] === 1 ? resp[i] : -resp[i];
+      if (!inGeo) bgS[i] += (sr - bgS[i]) * upS;
       const d = resp[i] - bg[i];
       const gone = resp[i] < 0.5 * bg[i] - 6;
       if (d <= 0 && gone) { bg[i] += d; continue; }   // structure vanished: forget it now
-      let inBand = false;
-      if (band && resp[i] > MIN_RESP && pol[i] === band.pol) {
-        const ax = x - band.cx, ay = y - band.cy;
-        const u = ax * dx + ay * dy, v = ax * dy - ay * dx;
-        inBand = u < band.hu && u > -band.hu && v < BG_PAD_V && v > -BG_PAD_V;
-      }
-      // Inside the band bg holds still entirely (except the vanish case above): rises
-      // would absorb a held blade, and noise-falls would slowly ratchet bg DOWN under
-      // a wrongly-latched line and regenerate its evidence — a self-locking loop that
-      // measurably kept a bedding fold hallucinated forever.
+      // Recovery: a return to the level AND polarity this pixel has LONG been known
+      // to hold is occluded room re-emerging, not a novel object. A fast MOTION-
+      // BLURRED blade sweeping over a shelf crushes its valley response for several
+      // frames with per-pixel luma deltas too small for MOVE_T; the vanish rule
+      // then forgets the shelf, and on return it masqueraded as fresh evidence for
+      // ~10s of BG_UP — measured as a ghost line the lock latched onto and then
+      // kept alive under its own freeze band. Guards: |bgS| > 20 so the faint
+      // pre-band echo the blade leaves in bgS does not count as "known"; the
+      // two-sided SIGNED match keeps a blade lying over known structure (level
+      // shifted or polarity flipped) novel; and NO band piercing — a dark blade
+      // crossing a remembered dark valley matches sign and level, and recovery
+      // inside the band measurably ate the held-still blade's low-contrast end.
+      // The cost of not piercing: food already under a band when recovery begins
+      // stays frozen, so a ghost that latches within ~2 frames of the crash can
+      // still ride until a challenger breaks it.
+      const aS = bgS[i] < 0 ? -bgS[i] : bgS[i];
+      if (!inGeo && mature && d > 0 && aS > 20 && Math.abs(sr - bgS[i]) <= 0.25 * aS + 6) { bg[i] += d * 0.3; continue; }
+      // Inside the band bg holds still entirely (except the vanish and recovery
+      // cases above): rises would absorb a held blade, and noise-falls would slowly
+      // ratchet bg DOWN under a wrongly-latched line and regenerate its evidence —
+      // a self-locking loop that measurably kept a bedding fold hallucinated
+      // forever.
       if (!inBand) bg[i] += d * up;
     }
   }
@@ -250,6 +337,7 @@ export function enroll(frames, SW, SH) {
 export function detect(pixels, SW, SH, model, prev) {
   if (!model) return null;
   buffers(model, SW, SH);
+  if (model.ax && model.ax.n < 99) model.ax.n++;
   const { lum, resp, ev, thin, pol, xs, ys, acc, nr, rho0 } = model;
   const n = SW * SH;
   // Optional stage profiler: set model.prof = {filter:0,vote:0,walk:0,learn:0,n:0}.
@@ -273,6 +361,49 @@ export function detect(pixels, SW, SH, model, prev) {
     model.prevLum.set(lum);
     if (!hit && model.lock && ++model.lock.miss > MISS_MAX) model.lock = null;
     return hit;
+  };
+
+  // Every would-be miss routes through here. A lock carrying real velocity dead-
+  // reckons along it for up to COAST_MAX frames instead of dropping: one motion-
+  // blurred or contrast-dead frame must not cost the game its blade, and
+  // reacquisition then tests against the advanced line, not a stale one.
+  // Each coasted frame still counts as a miss (a genuinely gone blade still dies at
+  // MISS_MAX), velocity decays so a lie cannot run away, and a still lock (vel~0)
+  // gets no coasting at all — for it this is exactly the old finish(null).
+  const coastOut = () => {
+    const C = model.lock;
+    if (!(C && C.vx0 !== undefined && (C.latV || 0) > 1.5 && C.miss < COAST_MAX)) {
+      return finish(null);
+    }
+    C.miss++;
+    // RIGID-BODY dead reckoning: translate the midpoint by the mean velocity and
+    // rotate about it by the angular rate the two ends' LATERAL velocities imply.
+    // Advancing each end independently let EMA'd axial noise shrink the segment,
+    // and a shrinking segment turns small lateral noise into runaway rotation
+    // (measured: 10-22deg/frame under decaying velocities). A sword is rigid.
+    const dx = C.e1[0] - C.e0[0], dy = C.e1[1] - C.e0[1];
+    const bl = Math.hypot(dx, dy) || 1, nx = -dy / bl, ny = dx / bl;
+    const w = ((C.vx1 - C.vx0) * nx + (C.vy1 - C.vy0) * ny) / bl;
+    const ca = Math.cos(w), sa = Math.sin(w);
+    const nmx = (C.e0[0] + C.e1[0]) / 2 + (C.vx0 + C.vx1) / 2;
+    const nmy = (C.e0[1] + C.e1[1]) / 2 + (C.vy0 + C.vy1) / 2;
+    const rhx = (dx * ca - dy * sa) / 2, rhy = (dx * sa + dy * ca) / 2;
+    C.e0[0] = nmx - rhx; C.e0[1] = nmy - rhy; C.e1[0] = nmx + rhx; C.e1[1] = nmy + rhy;
+    // Rotate the velocities with the body (a swing is circular, not straight), then
+    // damp — 0.75, not gentler: extrapolation overshoots hardest exactly where
+    // misses cluster, the stroke reversal, where the blade dwells in its lowest-
+    // contrast pose while the prediction sails on.
+    const r2 = (v, u) => [v * ca - u * sa, v * sa + u * ca];
+    [C.vx0, C.vy0] = r2(C.vx0, C.vy0); [C.vx1, C.vy1] = r2(C.vx1, C.vy1);
+    C.vx0 *= 0.75; C.vy0 *= 0.75; C.vx1 *= 0.75; C.vy1 *= 0.75;
+    C.vel *= 0.75; C.latV *= 0.75;
+    [C.t, C.r] = lineFromEnds(C.e0, C.e1, rho0);
+    const e0 = [C.e0[0], C.e0[1]], e1 = [C.e1[0], C.e1[1]];
+    const len = Math.hypot(e1[0] - e0[0], e1[1] - e0[1]);
+    const angle = Math.atan2(e1[1] - e0[1], e1[0] - e0[0]);
+    const cx = (e0[0] + e1[0]) / 2, cy = (e0[1] + e1[1]) / 2;
+    return finish({ cx, cy, angle, len, ends: [e0, e1], quality: Math.min(1, len / 70), _t: C.t, _r: C.r },
+      { cx, cy, angle, hu: len / 2 + BG_PAD_U, pol: C.pol || 2 });
   };
 
   // Valley/ridge response, and collect the responders so the vote below only walks
@@ -346,7 +477,7 @@ export function detect(pixels, SW, SH, model, prev) {
     }
   }
   if (P) { P.filter += performance.now() - mark; mark = performance.now(); }
-  if (cnt < 20) return finish(null);
+  if (cnt < 20) return coastOut();
 
   // Evidence = response minus what has always been there. g ramps the subtraction in
   // over BG_WARM frames so frame 1 behaves exactly like the ungated detector.
@@ -364,9 +495,36 @@ export function detect(pixels, SW, SH, model, prev) {
     if (e > EV_MIN) { evN++; hist[Math.min(63, e >> 2)]++; }
   }
   const L = model.lock;
+  // Dead-reckoned line for THIS frame: where the blade should be if it kept its
+  // measured endpoint velocity. The identity test below accepts the last seen line
+  // OR the predicted one — a fast swing rotates out of the static tolerance within
+  // one frame, and treating the real blade at its new angle as a "stranger" was,
+  // measured, the main source of mid-swing dropouts.
+  const spd = L ? Math.min(1, (L.latV || 0) / VEL_REF) : 0;
+  let pT = -1, pR = -1;
+  // Only from a lock measured LAST frame: after a miss the coasted line has already
+  // been advanced, and predicting again from it double-steps ahead — measured, that
+  // overshoot rotated the reachable set onto junk mid-reversal.
+  if (L && L.vx0 !== undefined && (L.vel || 0) > 1 && L.miss === 0) {
+    [pT, pR] = lineFromEnds(
+      [L.e0[0] + L.vx0, L.e0[1] + L.vy0], [L.e1[0] + L.vx1, L.e1[1] + L.vy1], rho0);
+  }
+  // Static tolerance widens with measured LATERAL speed too (prediction is only as
+  // good as one frame of constant velocity): ~0.4 bins per px/frame is the
+  // tip-speed-to-angle conversion for a ~70px blade.
+  const lockT = LOCK_T + Math.min(8, Math.round(0.4 * (L ? L.latV || 0 : 0)));
+  const lockR = LOCK_R + Math.min(15, Math.round(1.2 * (L ? L.latV || 0 : 0)));
+  // Walk-support threshold: while tracking a FAST lock, accept fainter evidence in
+  // the run walk. Motion blur smears the blade wide and faint — at 16px of tip
+  // smear its response sits at 6-11 luma, under EV_MIN — and the incumbent and
+  // predicted lines are always walked, so the extra sensitivity lands exactly
+  // where the blade should be. Faint pixels still do not VOTE (evCut >= EV_MIN),
+  // so junk lines cannot ride the lowered bar into the candidate list, and a
+  // still lock (spd 0) keeps the full threshold.
+  const EVW = spd > 0.5 ? 8 : EV_MIN;
   // Evidence glut: the whole room lit up at once. That is never a blade arriving —
   // learn the frame and stay quiet unless a healthy lock is already being tracked.
-  if (evN > GLUT * n && !(L && L.miss === 0)) return finish(null);
+  if (evN > GLUT * n && !(L && L.miss === 0)) return coastOut();
   // Bounded vote: keep the strongest voters so cost cannot scale with clutter.
   let evCut = EV_MIN;
   if (evN > VOTE_MAX) {
@@ -416,7 +574,7 @@ export function detect(pixels, SW, SH, model, prev) {
       if (np < PK) np++;
     }
   }
-  if (!np) return finish(null);
+  if (!np) return coastOut();
 
   // Diverse top-24: one strong blob votes at EVERY theta, so without suppression the
   // whole candidate list is 24 near-copies of the same clutter line and the real
@@ -432,11 +590,17 @@ export function detect(pixels, SW, SH, model, prev) {
   }
 
   // The locked line is always scored, even if its Hough peak fell out of the top-24 —
-  // hysteresis is worthless if the incumbent never stands for re-election.
+  // hysteresis is worthless if the incumbent never stands for re-election. The
+  // PREDICTED line stands too: mid-swing the incumbent's next position is where the
+  // evidence actually is.
   if (L) {
-    let has = false;
-    for (const q of chosen) if (sameLine(q[1], q[2], L.t, L.r, rho0, 3, 8)) { has = true; break; }
+    let has = false, hasP = false;
+    for (const q of chosen) {
+      if (sameLine(q[1], q[2], L.t, L.r, rho0, 3, 8)) has = true;
+      if (pT >= 0 && sameLine(q[1], q[2], pT, pR, rho0, 3, 8)) hasP = true;
+    }
     if (!has) chosen.push([0, L.t, L.r]);
+    if (pT >= 0 && !hasP && !sameLine(pT, pR, L.t, L.r, rho0, 3, 8)) chosen.push([0, pT, pR]);
   }
 
   const lim = SW + SH;
@@ -445,7 +609,8 @@ export function detect(pixels, SW, SH, model, prev) {
     const ct = COS[bt], st = SIN[bt];
     const rho = br - rho0;
     const px0 = rho * ct, py0 = rho * st, ux = -st, uy = ct;
-    const onLock = L && sameLine(bt, br, L.t, L.r, rho0, LOCK_T, LOCK_R);
+    const onLock = L && (sameLine(bt, br, L.t, L.r, rho0, lockT, lockR) ||
+      (pT >= 0 && sameLine(bt, br, pT, pR, rho0, LOCK_T, LOCK_R)));
     // Support now requires EVIDENCE, not just response: a static picture frame edge
     // sitting collinear with the swing line has full response and zero evidence, so it
     // neither extends a run past the real tip nor scores as a phantom bar. That is
@@ -499,7 +664,7 @@ export function detect(pixels, SW, SH, model, prev) {
         if (sx < 0 || sy < 0 || sx >= SW || sy >= SH) continue;
         const i = sy * SW + sx;
         const e = ev[i];
-        if (e <= EV_MIN) continue;
+        if (e <= EVW) continue;
         sup = 1;
         // The corridor exists to tolerate sub-pixel line placement, not to hand the
         // position to a neighbour: weight the polarity pick toward the axis, or a
@@ -527,21 +692,60 @@ export function detect(pixels, SW, SH, model, prev) {
         dark: bestDark, taint: bestTaint, onLock };
     }
   }
-  if (!best) return finish(null);
+  if (!best) return coastOut();
 
   // A healthy incumbent's single bad frame must not hand the lock to a stranger: if
   // the locked line produced no valid run at all this frame (a one-frame rejection,
   // an occlusion), a NON-matching winner is refused once. If the incumbent is really
-  // gone it misses a few more frames and the replacement goes through.
-  if (L && !best.onLock && !lockSeen && L.miss < 3) return finish(null);
+  // gone it misses a few more frames and the replacement goes through. At speed the
+  // refusal window shrinks to one frame: a fast blade legitimately teleports in
+  // line-space, and refusing it for 3 frames was, measured, the largest single
+  // source of mid-swing dropouts.
+  if (L && !best.onLock && !lockSeen && L.miss < (spd > 0.5 ? 1 : 3)) return coastOut();
+
+  // Rotation-rate cap against the CONFIDENT axis: a physical blade cannot turn
+  // ~90deg in one frame, so a non-incumbent winner far off the last trusted axis is
+  // junk light, not the sword (measured: every perpendicular "glitch" frame was
+  // such a capture, taken while the real blade sat in a contrast-dead pose — and
+  // the reference must be the last CONFIDENT lock, because a fresh junk capture
+  // otherwise becomes its own alibi). The allowance grows every frame the axis
+  // goes unconfirmed, so a blade genuinely turning while invisible is reachable
+  // the moment it re-emerges, and cold acquisition is never blocked for long. A
+  // challenger with heavy per-pixel motion (score >= 1.7x sup) bypasses the cap:
+  // that is a genuinely swinging blade breaking a wrongly-latched static lock,
+  // which must stay possible (junk lines measure 1.3-1.45x).
+  // The allowance grows faster when the blade was MOVING when last seen (~0.75deg
+  // of axis per px/frame of lateral end speed): a hard swing rotates ~12deg/frame,
+  // and a fixed growth lost the re-acquisition race to junk near the stale axis.
+  if (!best.onLock && model.ax && best.score < 1.7 * best.sup) {
+    let dtb = Math.abs(best.bt - model.ax.t);
+    if (dtb > NTH / 2) dtb = NTH - dtb;
+    if (dtb * (180 / NTH) > 8 + (6 + 1.5 * (model.ax.v || 0)) * (model.ax.n + 1)) return coastOut();
+  }
+
+  // ...and the translation analog: a blade cannot teleport across the room in a
+  // frame either. Junk that slips past the rotation cap — roughly parallel, or the
+  // allowance grown wide over a blind stretch — is almost always far away
+  // spatially (measured captures of junk sat 36-70px from the lock; real
+  // re-captures a few px to ~25px). Same growth, same heavy-motion escape.
+  if (L && !best.onLock && best.score < 1.7 * best.sup) {
+    const ctg = COS[best.bt], stg = SIN[best.bt], rg = best.br - rho0;
+    const mtg = (best.aT + best.bT) / 2;
+    const gx = rg * ctg - stg * mtg, gy = rg * stg + ctg * mtg;
+    const ldx = (L.e0[0] + L.e1[0]) / 2 - gx, ldy = (L.e0[1] + L.e1[1]) / 2 - gy;
+    if (Math.hypot(ldx, ldy) > 15 + 8 * (L.miss + 1)) return coastOut();
+  }
 
   // A replacement must look like a blade: thin-dominant, or genuinely MOVING (a fast
   // swing blurs the blade fat, but then its pixels carry heavy motion — score >> sup).
   // A fat, static line (a skateboard-tail diagonal frozen novel under its own band)
   // may never take a lock, which is what used to happen mid-raise and stick forever.
-  if (L && !best.onLock && (best.taint ||
+  // Taint blocks a replacement only while the candidate is STATIC: the pinched-wedge
+  // impostor taint exists for never moves, while a real blade sweeping across clutter
+  // honestly picks up strong foreign pixels and used to be refused for exactly that.
+  if (L && !best.onLock && ((best.taint && best.score < 1.5 * best.sup) ||
     (best.thinN < EST_THIN * best.sup && best.score < 1.4 * best.sup))) {
-    return finish(null);
+    return coastOut();
   }
 
   // Establishing a lock from NOTHING demands blade-like structure: long enough, and
@@ -567,7 +771,7 @@ export function detect(pixels, SW, SH, model, prev) {
         const sx = (x - st * o) | 0, sy = (y + ct * o) | 0;
         if (sx < 0 || sy < 0 || sx >= SW || sy >= SH) continue;
         const i = sy * SW + sx;
-        if (ev[i] > EV_MIN) { s = 1; break; }
+        if (ev[i] > EVW) { s = 1; break; }
       }
     }
     supL[t] = s;
@@ -602,7 +806,7 @@ export function detect(pixels, SW, SH, model, prev) {
         if (sx < 0 || sy < 0 || sx >= SW || sy >= SH) continue;
         const i = sy * SW + sx;
         const e = ev[i];
-        if (e <= EV_MIN || pol[i] !== wantPol) continue;
+        if (e <= EVW || pol[i] !== wantPol) continue;
         // lateral weighting, quadratic: a dark neighbour's pixels at the corridor's
         // edge (an abutting skateboard tail) must not drag the fitted axis — at
         // linear weighting they still tilted a 5px blade's axis by ~7deg
@@ -631,7 +835,36 @@ export function detect(pixels, SW, SH, model, prev) {
   if (best.onLock) {
     const d2 = (p, q) => (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2;
     if (d2(m0, L.e0) + d2(m1, L.e1) > d2(m1, L.e0) + d2(m0, L.e1)) { const t2 = m0; m0 = m1; m1 = t2; }
-    L.vel = Math.sqrt(Math.max(d2(m0, L.e0), d2(m1, L.e1)));
+    // Endpoint velocity, measured-to-measured (the reported ends are smoothed and
+    // would understate a swing), per frame across any missed gap, EMA'd one step so
+    // grain flicker averages out, components capped so a fragment jump (the base end
+    // re-appearing 30px down the blade) cannot poison the prediction.
+    const gapI = 1 / (L.miss + 1), cap = (v) => (v > 24 ? 24 : v < -24 ? -24 : v);
+    if (L.pm0) {
+      const nx0 = cap((m0[0] - L.pm0[0]) * gapI), ny0 = cap((m0[1] - L.pm0[1]) * gapI);
+      const nx1 = cap((m1[0] - L.pm1[0]) * gapI), ny1 = cap((m1[1] - L.pm1[1]) * gapI);
+      if (L.vx0 === undefined) { L.vx0 = nx0; L.vy0 = ny0; L.vx1 = nx1; L.vy1 = ny1; }
+      else {
+        L.vx0 = 0.5 * L.vx0 + 0.5 * nx0; L.vy0 = 0.5 * L.vy0 + 0.5 * ny0;
+        L.vx1 = 0.5 * L.vx1 + 0.5 * nx1; L.vy1 = 0.5 * L.vy1 + 0.5 * ny1;
+      }
+      L.vel = Math.max(Math.hypot(nx0, ny0), Math.hypot(nx1, ny1));
+      // Swing speed = the LATERAL component of endpoint velocity only. A support
+      // fragment flickering in and out moves the measured endpoint ALONG the axis
+      // (15-30px in one frame with nothing physically moving), and letting that
+      // open the clamps sawed the drift-test endpoints at 4px/frame. Real rotation
+      // and translation of a thin bar show up perpendicular to it.
+      const axl = Math.hypot(L.e1[0] - L.e0[0], L.e1[1] - L.e0[1]) || 1;
+      const nux = -(L.e1[1] - L.e0[1]) / axl, nuy = (L.e1[0] - L.e0[0]) / axl;
+      const lv = Math.max(Math.abs(nx0 * nux + ny0 * nuy), Math.abs(nx1 * nux + ny1 * nuy));
+      // EMA: the clamps open on SUSTAINED speed. One noisy excursion halves away; a
+      // real swing sustains 5-15px/frame and keeps them open the whole stroke.
+      L.latV = L.latV === undefined ? lv : 0.5 * L.latV + 0.5 * lv;
+    }
+    L.pm0 = m0.slice(); L.pm1 = m1.slice();
+    // Speed factor with a 2.5px floor: held-still measurement wobble (up to ~2px on
+    // a wide blade, laterally, EMA'd) must leave the clamps fully closed.
+    const sp = Math.min(1, Math.max(0, ((L.latV || 0) - 2.5) / (VEL_REF - 2.5)));
     // A measured run SHORTER along the same axis is usually occlusion or a contrast
     // hole, not the sword shrinking — the base end was teleporting 15-20px as the
     // lower half's marginal support flickered in and out. Coast inward slowly;
@@ -649,19 +882,45 @@ export function detect(pixels, SW, SH, model, prev) {
       // flickering lower half re-extends smoothly instead of teleporting 15-20px),
       // shrink decays slowly — a vanished tail is usually occlusion, and chasing an
       // alternating measurement at full speed just saws the endpoint back and forth.
+      // Both caps and the deadband open with speed: mid-swing the geometry must be
+      // allowed to keep up with the blade — the still-tuned 5px growth cap was one
+      // of the things that could not.
       const sig = along(h) >= 0 ? 1 : -1;
       const dA = sig * (along(m) - along(h));
-      const dAx = dA > DEAD ? Math.min(dA, 5) : dA < -DEAD ? -0.35 : dA * 0.06;
+      const db = DEAD * (1 - sp);
+      const dAx = dA > db ? Math.min(dA, 5 + 20 * sp)
+        : dA < -db ? Math.max(dA, -(0.35 + 8 * sp)) : dA * 0.06;
       const fL = Math.abs(lat) < DEAD ? 0.06 : Math.min(1, Math.abs(lat) / PULL_FULL);
       h[0] += uxh * sig * dAx + -uyh * lat * fL;
       h[1] += uyh * sig * dAx + uxh * lat * fL;
       return true;
     };
-    if (!coast(L.e0, m0)) pull(L.e0, m0);
-    if (!coast(L.e1, m1)) pull(L.e1, m1);
-    L.t = best.bt; L.r = best.br; L.miss = 0; L.age++;
+    if (!coast(L.e0, m0)) pull(L.e0, m0, sp);
+    if (!coast(L.e1, m1)) pull(L.e1, m1, sp);
+    const hadGap = L.miss > 0;
+    L.t = best.bt; L.r = best.br; L.miss = 0; L.age++; L.pol = wantPol;
+    // CONSECUTIVE confirmations only: the first hit after a blind gap may be a junk
+    // line matched against a coasted (guessed) position, and refreshing the trusted
+    // axis from it would make the junk its own alibi.
+    if (!hadGap && L.age >= BAND_AGE) model.ax = { t: best.bt, n: 0, v: L.latV || 0 };
   } else {
-    model.lock = { t: best.bt, r: best.br, e0: m0.slice(), e1: m1.slice(), miss: 0, age: 1, vel: 9 };
+    // vel 9 keeps full scans until real speed is measured; latV 0 keeps the line
+    // tolerances TIGHT — seeding it fast let a fresh (possibly wrong) capture walk
+    // across neighbouring clutter lines before its first honest measurement.
+    const nl = { t: best.bt, r: best.br, e0: m0.slice(), e1: m1.slice(),
+      pm0: m0.slice(), pm1: m1.slice(), miss: 0, age: 1, vel: 9, latV: 0, pol: wantPol };
+    // ...but a replacement mid-swing is the SAME physical blade a few frames on:
+    // inherit the outgoing lock's damped velocity, or the very next blurred frame
+    // finds a velocity-less lock that cannot coast (measured as 3-frame dropouts
+    // right after every mid-swing re-capture).
+    if (L && L.vx0 !== undefined) {
+      const d2c = (p, q) => (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2;
+      const flip = d2c(m0, L.e0) + d2c(m1, L.e1) > d2c(m1, L.e0) + d2c(m0, L.e1);
+      nl.vx0 = 0.75 * (flip ? L.vx1 : L.vx0); nl.vy0 = 0.75 * (flip ? L.vy1 : L.vy0);
+      nl.vx1 = 0.75 * (flip ? L.vx0 : L.vx1); nl.vy1 = 0.75 * (flip ? L.vy0 : L.vy1);
+      nl.vel = 0.75 * (L.vel || 0); nl.latV = 0.75 * (L.latV || 0);
+    }
+    model.lock = nl;
   }
 
   const K = model.lock;
