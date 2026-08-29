@@ -158,6 +158,13 @@ function lineDist(pt, pose) {
   return Math.abs(-(pt[0] - pose.cx) * dy + (pt[1] - pose.cy) * dx);
 }
 
+// detect() double-buffers its result (zero steady-state allocation), so a retained
+// `r` is overwritten two hits later. ObjectBlade retains ends exactly one frame,
+// which the two buffers cover; this harness retains EVERY frame for post-hoc
+// analysis, so it must copy what it keeps.
+const snap = (r) => (r ? { cx: r.cx, cy: r.cy, angle: r.angle, len: r.len, quality: r.quality,
+  ends: [[r.ends[0][0], r.ends[0][1]], [r.ends[1][0], r.ends[1][1]]] } : null);
+
 function runSeq(script, wSword, seed) {
   // script: array of {n, poseAt(f 0..1)|null}; returns [{r, ms, pose}]
   const model = enroll([makeFrame(seed, 0, null, 0)], W, H);
@@ -171,7 +178,7 @@ function runSeq(script, wSword, seed) {
       const r = detect(p, W, H, model, prev);
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
       prev = r || null;                        // ObjectBlade nulls prev on a miss
-      out.push({ r, ms, pose, phase: ph.name });
+      out.push({ r: snap(r), ms, pose, phase: ph.name });
     }
   }
   out.model = model;
@@ -359,7 +366,7 @@ function runBlurSwing({ n, blurPx, seed }) {
     const p = blurFrame(seed, k, PX, PY, aM, span, LEN, 2);
     const r = detect(p, W, H, model, prev);
     prev = r || null;
-    out.push({ r, angle: aM });
+    out.push({ r: snap(r), angle: aM });
   }
   return out;
 }
@@ -483,6 +490,60 @@ console.log("== 6. BUDGET ==");
   console.log(`  detect() median ${n2(med(ms))}ms  p99 ${n2(p99(ms))}ms  worst ${n2(mx(ms))}ms  (budget: median <4ms, p99 <12ms)`);
   check("budget", med(ms) < 4, `median ${n2(med(ms))}ms >= 4ms`);
   check("budget", p99(ms) < 12, `p99 ${n2(p99(ms))}ms >= 12ms`);
+}
+
+// ------------------------------------------------------------------ 7. allocation pressure
+
+// A GC-driven tail shows up exactly as a fat p99 over a fine median — the browser
+// measured p90 30.1ms against a 6.5ms median on this very detector. detect() now
+// allocates nothing in steady state, so the distribution must be TIGHT. The loop
+// itself keeps only a preallocated Float64Array of timings (no snap, no out array):
+// harness garbage must not be able to gift detect() a GC pause and fail the assert.
+function timedRun(seed, wSword, pose) {
+  const model = enroll([makeFrame(seed, 0, null, 0)], W, H);
+  const ms = new Float64Array(600);
+  let prev = null, k = 0;
+  if (pose) for (let i = 0; i < 8; i++, k++) {   // the raise, so the lock establishes honestly
+    const p = { ...pose, cy: pose.cy + 40 * (1 - i / 7) };
+    prev = detect(makeFrame(seed, k, p, wSword), W, H, model, prev) || null;
+  }
+  for (let i = 0; i < 600; i++, k++) {
+    const p = makeFrame(seed, k, pose, wSword);
+    const t0 = process.hrtime.bigint();
+    const r = detect(p, W, H, model, prev);
+    ms[i] = Number(process.hrtime.bigint() - t0) / 1e6;
+    prev = r || null;
+  }
+  const s = [...ms.subarray(30)].sort((x, y) => x - y);   // skip JIT + bg cold-ramp warm-up
+  return { med: s[s.length >> 1], p75: s[Math.floor(s.length * 0.75)],
+    p99: s[Math.floor(s.length * 0.99)], worst: s[s.length - 1] };
+}
+console.log("== 7. ALLOCATION PRESSURE (600 frames each on the busy room) ==");
+{
+  // Uniform-work case: no sword -> no lock -> every frame is the identical full-frame
+  // filter + vote. Any p99/median spread here is runtime noise, not workload. The OS
+  // can gift one run a burst of slow frames (core migration, turbo drop, profiled
+  // live as ~10 consecutive fat FILTER frames with zero allocation in them) that
+  // looks exactly like a GC tail — but a real allocation tail reproduces and
+  // scheduler noise does not, so a failing first run earns ONE retry. The retry
+  // REPLACES the run: best-of-two would both weaken the bound and print a
+  // cherry-picked number. Measured margin is 1.2-1.4x against a 3x bar, so the
+  // retry should essentially never fire.
+  let s = timedRun(97, 0, null);
+  if (s.p99 >= 3 * s.med) s = timedRun(197, 0, null);   // retry the RUN, then live with it
+  console.log(`  no-sword    med ${n2(s.med)}ms  p99 ${n2(s.p99)}ms  worst ${n2(s.worst)}ms  p99/med ${(s.p99 / s.med).toFixed(2)}x`);
+  check("alloc", s.p99 < 3 * s.med, `p99 ${n2(s.p99)}ms >= 3x median ${n2(s.med)}ms — allocation/GC tail`);
+}
+{
+  // Steady-state gameplay case: sword held, lock earned. This distribution is
+  // BIMODAL BY DESIGN — 3 of 4 frames scan only the lock's window, the 4th is a
+  // full scan — so p99/median measures that architecture, not garbage. The honest
+  // tightness bound is the tail against the expensive mode (p75 sits inside the
+  // full-scan mode): nothing may live above it but runtime noise.
+  let s = timedRun(98, 2, STILL);
+  if (s.p99 >= 3 * s.p75) s = timedRun(198, 2, STILL);   // retry the RUN, then live with it
+  console.log(`  held-sword  med ${n2(s.med)}ms  p75 ${n2(s.p75)}ms  p99 ${n2(s.p99)}ms  worst ${n2(s.worst)}ms  p99/p75 ${(s.p99 / s.p75).toFixed(2)}x`);
+  check("alloc", s.p99 < 3 * s.p75, `p99 ${n2(s.p99)}ms >= 3x full-scan mode ${n2(s.p75)}ms — allocation/GC tail`);
 }
 
 if (failures) { console.log(`\n${failures} FAILURE(S)`); process.exit(1); }

@@ -24,6 +24,35 @@ const VEL_MIX = 0.5;         // how fast the velocity estimate follows the measu
 const VEL_CAP = 26;          // px/frame ceiling, so a bad frame can't fling the blade away
 const STORE_KEY = "fn_katana";
 
+// --- latency compensation ---------------------------------------------------------
+// By the time a detection is drawn, the real sword has moved on: camera exposure,
+// browser delivery, downscale, detect, smooth, render. Measured live that is 50-80ms,
+// which during a hard swing is a large visible trail. So the emitted pose is
+// extrapolated forward along its measured velocity by a MEASURED delay — never an
+// assumed one, because cameras and browsers differ wildly (node median 3ms vs browser
+// p90 30ms on the same detector).
+const LEAD_MAX_MS = 120;     // ceiling on the applied lead — a bad reading must not fling the blade
+// Held still the detector jitters ~0.06px/frame, so this dead zone keeps the lead off
+// almost always: measured over 300 still frames only 8 of 288 crossed it, and those got
+// under 2ms of lead — median endpoint movement was unchanged at 0.351px. Not literally
+// bit-identical, but far below the level anything is visible at.
+const LEAD_DEAD = 0.75;      // px/frame below which no lead applies
+// Measured peak of a real ±70deg swing is 7.5px/frame mean endpoint speed, so full lead
+// lands at the top of a hard swing and the median of that swing sits near a third of it.
+// Lowering this trades tail for median (LF=4: median render-time angle error 7.3->4.8deg
+// but worst 20.6->22.6deg, because extrapolation must overshoot at a stroke reversal).
+const LEAD_FULL = 8;         // px/frame at which the full measured delay is applied
+const LEAD_ROT_CAP = 0.9;    // rad cap on extrapolated rotation, so ω noise can't spin the blade
+const SKEW_LEAK = 0.5;       // ms/frame the min-skew floor drifts up — re-adapts in ~2s at 30fps
+const SKEW_RESEED = 500;     // a frame "older" than this is a clock discontinuity, not a real age
+// Angle passes through the cos/sin 1-euro AFTER extrapolation, which eats some of the
+// lead. Measured on the deployed params (minCutoff 1.5, beta 4.0 at 30Hz) the lag PEAKS
+// mid-swing and falls away again — 15.8ms at 150deg/s, 18.0 at 300, 15.5 at 450, 7.4 at
+// 700 — because that is exactly what the 1-euro speed term is for. Folding in the peak
+// slightly over-leads the fastest swings, which is the safe direction: it is only added
+// when the lead itself applies, i.e. exactly when the blade is swinging.
+const SMOOTH_LAG_MS = 18;
+
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
 /**
@@ -40,6 +69,55 @@ export function pairEnds(ends, prevEnds) {
   const straight = d(ends[0], prevEnds[0]) + d(ends[1], prevEnds[1]);
   const crossed = d(ends[1], prevEnds[0]) + d(ends[0], prevEnds[1]);
   return crossed < straight ? [1, 0] : [0, 1];
+}
+
+/**
+ * Track the floor of `skew` (performance.now − media time): the floor is the freshest
+ * delivery ever seen, so skew − floor is how stale the CURRENT frame already is. The
+ * floor leaks upward slowly so a genuine latency shift re-adapts, and re-seeds outright
+ * on a clock discontinuity (stream restart resets currentTime, which would otherwise
+ * read as a frame hundreds of ms old).
+ */
+export function updateMinSkew(minSkew, skew) {
+  if (skew - minSkew > SKEW_RESEED) return skew;
+  return Math.min(minSkew + SKEW_LEAK, skew);
+}
+
+/** Capture-to-render estimate: frame age plus one detect+dispatch interval, clamped. */
+export function estimateDelayMs(skew, minSkew, tickMs) {
+  return Math.min(LEAD_MAX_MS, Math.max(0, (skew - minSkew) + tickMs));
+}
+
+/**
+ * How much of the measured delay to actually apply, 0..1. Zero below LEAD_DEAD so the
+ * held-still case (0.06px endpoint jitter) is untouched — lead there would only
+ * amplify noise into visible wobble. Confidence scales it too: a shaky lock must not
+ * amplify its own error.
+ */
+export function leadScale(speed, conf) {
+  return clamp01((speed - LEAD_DEAD) / (LEAD_FULL - LEAD_DEAD)) * clamp01(conf);
+}
+
+/**
+ * Advance the blade by `leadFrames` as a RIGID BODY: translate by the mean endpoint
+ * velocity, rotate about the centre by the angular rate the endpoints' lateral
+ * velocities imply. Never advect the endpoints independently — that turns axial noise
+ * into runaway rotation, a bug this codebase has already hit once. Axial velocity
+ * components (the blade "stretching") contribute nothing here by construction, and a
+ * rotation cannot change the blade's length.
+ */
+export function rigidExtrapolate(ends, vel, leadFrames) {
+  const cx = (ends[0][0] + ends[1][0]) / 2, cy = (ends[0][1] + ends[1][1]) / 2;
+  const vcx = (vel[0][0] + vel[1][0]) / 2, vcy = (vel[0][1] + vel[1][1]) / 2;
+  const hx = ends[1][0] - cx, hy = ends[1][1] - cy;
+  const h2 = hx * hx + hy * hy;
+  // lateral component of end 1's velocity about the centre → rad/frame
+  const w = h2 > 1e-6 ? (hx * (vel[1][1] - vcy) - hy * (vel[1][0] - vcx)) / h2 : 0;
+  const rot = Math.max(-LEAD_ROT_CAP, Math.min(LEAD_ROT_CAP, w * leadFrames));
+  const cos = Math.cos(rot), sin = Math.sin(rot);
+  const ncx = cx + vcx * leadFrames, ncy = cy + vcy * leadFrames;
+  const rhx = hx * cos - hy * sin, rhy = hx * sin + hy * cos;
+  return [[ncx - rhx, ncy - rhy], [ncx + rhx, ncy + rhy]];
 }
 
 // You hold a sword below its tip, so the grip is the LOWER end on screen. The 6px
@@ -68,6 +146,11 @@ export class ObjectBlade {
     // main.js to get the same "fast swing → low lag" behaviour.
     this.miss = 0;           // consecutive detector misses we are coasting through
     this.vel = [[0, 0], [0, 0]];  // per-endpoint velocity, px/frame
+    // Pipeline-delay bookkeeping. These describe the camera/browser, not the track, so
+    // reset() leaves them alone — the measurement stays warm across re-locks.
+    this.minSkew = Infinity; // floor of (now − media time), the freshest delivery seen
+    this.tickEma = 33;       // ms between detections, exponentially averaged
+    this.delayMs = 0;        // current capture-to-render estimate
     // beta is LARGE because these filter cos/sin, whose derivatives only reach a few
     // units per second even in a hard swing. With a small beta the cutoff barely rises
     // off its floor and the blade stays heavily smoothed exactly when it is moving
@@ -169,6 +252,13 @@ export class ObjectBlade {
   update(video, dtMs) {
     const f = this._grab(video);
     if (!f) return null;
+    // Measure how old this frame already is (skew against its rolling floor) and how
+    // long a detect+dispatch cycle takes right now, so the lead tracks the REAL
+    // machine — the browser tail measured 44.8ms worst against a 3ms node median.
+    const skew = performance.now() - video.currentTime * 1000;
+    this.minSkew = updateMinSkew(this.minSkew, skew);
+    if (dtMs > 0 && dtMs < 200) this.tickEma += (dtMs - this.tickEma) * 0.1;
+    this.delayMs = estimateDelayMs(skew, this.minSkew, this.tickEma);
     if (!this.model) this.model = detector.enroll([f.pixels], f.SW, f.SH);
     const hit = detector.detect(f.pixels, f.SW, f.SH, this.model, this.prev);
 
@@ -214,6 +304,14 @@ export class ObjectBlade {
 
   /** Shared shaping of a pair of endpoints into what main.js consumes. */
   _emit(ends, f, dtMs, conf) {
+    // Lead the pose by the measured pipeline delay (plus the angle filter's own
+    // measured lag, which sits downstream of this extrapolation). Speed/confidence
+    // scaled, so a still blade emits exactly what was measured. Tracking state
+    // (prevEnds, vel) was already updated from the MEASURED ends — the prediction
+    // never feeds back into itself.
+    const sp = (Math.hypot(this.vel[0][0], this.vel[0][1]) + Math.hypot(this.vel[1][0], this.vel[1][1])) / 2;
+    const lead = Math.min(LEAD_MAX_MS, this.delayMs + SMOOTH_LAG_MS) * leadScale(sp, conf);
+    if (lead > 0) ends = rigidExtrapolate(ends, this.vel, lead / this.tickEma);
     const hilt = ends[this.hilt], tip = ends[1 - this.hilt];
     const raw = Math.atan2(tip[1] - hilt[1], tip[0] - hilt[0]);
     // Smooth wrap-safely: filtering the angle itself would spin the blade all the way
@@ -224,7 +322,8 @@ export class ObjectBlade {
       gripNorm: { x: hilt[0] / f.SW, y: hilt[1] / f.SH },
       angle,
       conf,
-      // the blade as actually seen, for drawing on the camera feed
+      lead, // ms of extrapolation actually applied — for the debug overlay
+      // the blade as drawn on the camera feed (led, so it matches the game blade)
       endsNorm: [{ x: hilt[0] / f.SW, y: hilt[1] / f.SH }, { x: tip[0] / f.SW, y: tip[1] / f.SH }],
     };
   }
