@@ -167,12 +167,19 @@ window.addEventListener("resize", resizeAll);
 // The webcam is just a small PiP now, so the blade is a free cursor: we apply a
 // centered gain so a comfortable hand range covers the whole screen (reach the
 // edges, feels faster), then mirror x for the selfie view.
-function mapPoint(nx, ny) {
+function mapPoint(nx, ny, gain) {
   const cw = window.innerWidth, ch = window.innerHeight;
-  const gx = Math.min(1, Math.max(0, 0.5 + (nx - 0.5) * GAIN_X));
-  const gy = Math.min(1, Math.max(0, 0.5 + (ny - 0.5) * GAIN_Y));
+  const gX = gain ?? GAIN_X, gY = gain ?? GAIN_Y;
+  const gx = Math.min(1, Math.max(0, 0.5 + (nx - 0.5) * gX));
+  const gy = Math.min(1, Math.max(0, 0.5 + (ny - 0.5) * gY));
   return { x: (1 - gx) * cw, y: gy * ch };
 }
+// A sword tip lives near the EDGES of the camera frame — held up, it sits around y=0.14.
+// The default 1.8x gain exists so a fingertip near the middle of frame can still reach the
+// screen edges, but it only leaves a usable band of 0.22..0.78, so a raised blade lands
+// outside it, clamps to the screen border and stops responding entirely. The sword already
+// gives the player reach; map it 1:1 and the whole frame is usable.
+const OBJECT_GAIN = 1;
 
 // Tracker runs with numHands:2 (for split-screen). Pick the hand to control a blade,
 // LOCKED onto the previously-chosen hand by proximity so a stray hand that wanders
@@ -1008,7 +1015,7 @@ function tick(now) {
       if (ob) {
         // The tip is a single point, so it goes through exactly the path the index
         // fingertip takes in solo mode: map, smooth, one slice segment, one white light.
-        const raw = mapPoint(ob.tipNorm.x, ob.tipNorm.y);
+        const raw = mapPoint(ob.tipNorm.x, ob.tipNorm.y, OBJECT_GAIN);
         if (misses >= 2) { cursorFX.reset(); cursorFY.reset(); bladePrev = null; }
         misses = 0;
         const cur = { x: cursorFX.filter(raw.x, freq), y: cursorFY.filter(raw.y, freq) };

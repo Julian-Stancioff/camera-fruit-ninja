@@ -24,14 +24,14 @@ export function runTipProbe(video) {
   rig.className = "probe-rig";
   rig.style.cssText =
     "position:fixed;inset:0;z-index:99999;background:#07070b;display:flex;flex-direction:column;" +
-    "align-items:center;justify-content:center;gap:10px;font:800 clamp(20px,3.4vw,40px) system-ui;color:#fff;text-align:center";
+    "align-items:center;justify-content:flex-start;gap:10px;padding:12px 0 40px;overflow:auto;font:800 clamp(18px,2.6vw,34px) system-ui;color:#fff;text-align:center";
   rig.innerHTML =
     '<div id="probe-msg" style="padding:0 20px">Starting…</div>' +
     '<div id="probe-sub" style="font-size:0.55em;font-weight:600;color:#8fe3ff"></div>' +
     '<canvas id="probe-cv" style="border-radius:12px;max-width:92vw;height:auto"></canvas>' +
     '<div id="probe-read" style="font-size:0.5em;font-weight:600;color:#ffd24a"></div>' +
     '<pre id="probe-out" style="display:none;font:600 13px ui-monospace,monospace;color:#cfe;text-align:left;' +
-    'background:#000;padding:14px;border-radius:10px;max-height:52vh;overflow:auto"></pre>';
+    'background:#000;padding:14px;border-radius:10px;max-height:none"></pre>';
   document.body.appendChild(rig);
 
   const view = document.getElementById("probe-cv");
