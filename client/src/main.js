@@ -775,7 +775,16 @@ function startKatana() {
   objectBlade.load();      // seed with the last approved object, if any
   enterKatana();
 }
-$("mode-katana").addEventListener("click", startKatana);
+// KATANA is now a self-contained mode built from the ?tipprobe harness — the only thing
+// that has ever tracked this player's real blade. It owns the screen and runs its own
+// detector loop, so none of the main loop's frame-gating or smoothing can get near it.
+// The main loop is parked while it runs, so MediaPipe is not burning frames underneath.
+$("mode-katana").addEventListener("click", async () => {
+  $("mode-screen").hidden = true;
+  const { startKatanaMode } = await import("./game/KatanaMode.js");
+  running = false;
+  startKatanaMode(video, () => { running = true; startLoop(); showModeScreen(); });
+});
 
 function enterKatana() {
   katGate = { locked: false, warmUntil: performance.now() + 1800 };
