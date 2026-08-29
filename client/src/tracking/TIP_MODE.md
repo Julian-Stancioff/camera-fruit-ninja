@@ -1,92 +1,149 @@
-# Tip mode (spare part — not wired in)
+# Tip mode
 
 `detectTip.js` tracks ONLY THE TIP of the blade as a single moving point, instead of
-fitting the blade's whole axis the way `detectAuto.js` does. It exists as a fallback
-for the day axis fitting is not robust enough — above all under motion blur, where a
-smeared blade stops being a line but still has a leading extremity.
+fitting the blade's whole axis the way `detectAuto.js` does. It exists because axis
+fitting is not robust enough under the motion blur of a real swing, where a smeared
+blade stops being a line but still has a leading extremity.
 
-**Nothing imports it, and that is deliberate.** Vite only bundles what the
-`index.html` module graph reaches, so leaving these files unimported is exactly what
-keeps them out of the shipped app. The only importer anywhere is the node test
-(`client/test/detectTip.test.mjs`), which never gets bundled. The detector is
-self-contained (zero imports) so it can also be pasted into a live page for testing.
+The detector is self-contained (zero imports) so it can also be pasted into a live
+page for testing. Its only importer in this repo is the node test
+(`client/test/detectTip.test.mjs`); a mode wrapper is being wired by the
+orchestrator separately.
 
-## How it works
+## The failure this file must never repeat
 
-One luminance background model (the single highest-value mechanism from the axis
-effort — it took the real room from 37% of the frame lit to ~0%), a slow room memory
-that kills the ghosts a luma background leaves behind, and a scored extremity search:
-foreground pixels compete on distance-from-the-foreground-mass, a strong tip-is-up
-prior (the same bet `ObjectBlade.hiltEnd` hard-codes), per-pixel motion, contiguity,
-and continuity with the predicted tip. No line vote, no axis, no hilt/tip
-disambiguation. Deadbanded reporting, velocity coasting, and a speed-gated
-faint-evidence window carry it through blur and misses.
+The first deployed build of this detector scored foreground pixels on
+distance-from-the-foreground-mass plus a tip-is-up prior — "the far end of the
+foreground". Its synthetic acceptance scene had NO BODY in it, so the only
+foreground was the blade and the extremity search was trivially right. In the live
+game the PLAYER is foreground — head, shoulders, torso, a raised elbow, one swaying
+mass — and the player reported, accurately: *"It's not even connected to the tip of
+the blade at all."*
 
-## Measured (same synthetic build of the real room the axis suite uses, 192x108)
+Reproduced after the fact by adding a synthetic player to the committed room
+(measured against the deployed build):
+
+| scene | deployed build |
+|---|---|
+| player alone, no sword, 310 frames | **302 reported a "tip", 208 of them on his head/elbow** |
+| player + sword raised, pre-raise frames | 26/30 reports on the player |
+| player + sword hanging idle (tip below his head) | 78/100 reports on the player |
+| player + blurred swings | 2-3 reports/run stolen by the head |
+
+The one screenshot where the deployed build looked right had the sword raised high
+above his head against the ceiling — the only pose where "topmost extremity" and
+"tip" coincide. That lucky pose is what sent earlier rounds chasing the wrong bug.
+
+## How it works now
+
+One luminance background model (fast `bg` + slow room memory `bgS`, the two
+highest-value mechanisms of the whole katana effort), then:
+
+- **Mass map**: strict novelty (|lum-bg| > 16) plus ABSORBED novelty (|bg-bgS| > 24)
+  — a standing body is swallowed by the fast background in ~12 frames and must
+  still count as bulk for the gates below.
+- **Thinness gate** (every strict candidate): mass on a 9px probe perpendicular to
+  the candidate's outward direction must be ≤ 6. A 1-2px blade reads 2-5; a head
+  rim, torso edge or arm reads 7-9. The single strongest body-vs-blade
+  discriminator measured here.
+- **Protrusion gate** (winners not carried by a reporting lock's continuity): the
+  local mass mean-offset must be one-sided (a tip has all its mass on one side)
+  and 5px-narrow rows 3 and 6px behind it must continue thinly (total ≤ 12 — a 5px
+  forearm reads 15+). Gated winners fall through to the next-best of a top-8
+  shortlist. A blooded fast lock's heavily-moving winner is exempt from the
+  continuation requirement (a blurred tip has no strict shaft behind it — that is
+  what blur IS).
+- **Acquisition by blooding**: NO reports until a candidate earns the lock. Up to 3
+  candidate locks track independently (the per-frame winner ping-pongs between the
+  blade and body flicker, so the top few gate-surviving candidates all feed the
+  tracker, one per feature). A candidate bloods only with: a coherent streak (2+
+  same-direction steps of 1.5px+, decaying not resetting on quiet frames,
+  surviving 6-frame gaps — the blade vanishes crossing the contrast-dead bed
+  band), 8px+ of net travel from a windowed origin, travel UPWARD-dominant (|dy| ≥
+  1.5|dx|, dy<0 — you acquire a katana by RAISING it, and every measured false
+  blood travelled along the head's horizontal hair band), and a shaft behind it:
+  walking back along the travel (the shaft is what the tip left behind), 4 of 5
+  rows at 3px spacing must be blade-like — 1-4px of CONTIGUOUS mass (a 4px forearm
+  reads as two edge strips split 4 apart; the shoulder line crosses at full
+  width), totalling 9-14 (flicker crumbs measured 4-8; a real 2px shaft 10).
+- **Continuity is earned**: the LOCK_W bonus, the faint-evidence window, the freeze
+  disc and velocity coasting only exist for a blooded lock. An unblooded squatter
+  on a head rim must not outscore the real tip rising past it (measured costing
+  entire acquisitions).
+- A coasted report that lands in thick mass (3x3 mass ≥ 8) is suppressed — dead
+  reckoning must not paint the cursor onto the player.
+
+Deadbanded reporting, velocity coasting and the speed-gated faint window carry the
+blooded lock through blur and misses exactly as before.
+
+## Measured (committed scene, 192x108; player scenes include head, shoulders, torso and a raised elbow, swaying, plus the room's 37-44% raw-lit clutter)
 
 | case | result |
 |---|---|
-| held still, 300 frames | 100% found, tip err med 2.5px, movement med 0.02px / worst 0.07px |
-| fast swing, sharp, ~6deg/frame peak | 100% tracked, err med 2.9px, p90 6.1px, worst 10.6px |
-| no sword, 300 frames | 0 hallucinations |
-| lowered out of frame | reports stop within 13 frames (3-13 across seeds; the mechanism's bound is COAST_MAX+MISS_MAX = 16), 0 ghosts after, re-acquires 100% |
-| budget | median 0.19ms, p99 0.26-0.58ms in node (axis mode: 3.01ms node, 6.5ms live browser) |
+| bare room: held still, 300 frames | 100% found, tip err med 2.5px, movement med 0.02px |
+| bare room: fast swing, sharp | 100% tracked, med 2.9px, p90 6.1px, worst 10.6px |
+| bare room: no sword, 300 frames | 0 hallucinations |
+| bare room: lowered out of frame | reports stop ≤16 frames, 0 ghosts, re-acquires 100% (med 2.5px) |
+| **player + sword held still** | pre-sword reports 0/30; found 99.7%, med 2.5px, worst 3.9px, **0 stolen** |
+| **player + full swing** | 100% tracked, 100% within 10px, med 2.6px, **0 stolen** |
+| **player, NO sword, 340 frames** | **0 reports** (deployed build: 302) |
+| **player + sword hanging idle** | 0 reports — silent by design (never raised), **0 on the player** (deployed: 78) |
+| budget | median 0.42ms, p99 0.45ms bare; 0.43ms / 0.47ms with the player (node) |
 
-Motion blur (peak tip smear per 33ms exposure), versus the axis detector's known
-curve on the same harness:
+Motion blur (peak tip smear per 33ms exposure), WITH the player in frame, versus
+the axis detector's known curve on the same harness:
 
-Committed-seed numbers, with the spread over a sweep of 14 grain seeds and 9
-re-rolled rooms in brackets — read the bracket, not the headline:
+| blur | tracked | within 10px | err med / p90 / worst | stolen | axis mode tracked |
+|---|---|---|---|---|---|
+| 8px  | 100%  | 100%  | 3.4 / 6.2 / 9.8px    | 0 | 91.7% |
+| 16px | 100%  | 86.1% | 5.4 / 13.9 / 39.6px  | 0 | 68.1% |
+| 24px | 100%  | 77.8% | 6.6 / 15.1 / 39.3px  | 0 | 45.8% |
 
-| blur | tip mode tracked | within 10px | err med / p90 / worst | axis mode tracked |
-|---|---|---|---|---|
-| 8px  | 100%  | 100%  [94-100%] | 3.3 [2.9-3.4] / 5.9 / 9.9px   | 91.7% |
-| 16px | 100%  | 86.1% [76-94%]  | 5.7 [4.4-6.1] / 14.1 / 39.5px | 68.1% |
-| 24px | 98.6% | 76.4% [38-82%]  | 7.0 [6.2-15.5] / 16.3 / 43.2px | 45.8% |
+Bare-room blur is unchanged from the pre-fix detector (100/100, 100/86.1,
+98.6/76.4) — the player fix cost the blur bet nothing. "Stolen" = a report >15px
+from truth, on the player, and >4px off the blade's axis; reports that retreat
+along a smeared blade while it crosses the raised arm are the documented
+blur inward-pull, not steals.
 
-The blur bet holds at 8 and 16px: where axis fitting drops a third of its frames and
-its median angle error hits 28.7deg (~35px of tip position on a 74px blade), tip mode
-reports every frame and puts 8 in 10 of them within 10px. Note that tracked% is a soft
-metric here — a coasting point always has something to say — so within-10px is the
-number that matters. At 24px the physics runs out: a 2px blade at 45 luma smeared over
-24px leaves ~4 luma of tip, at the grain floor, and the seed spread (38-82% within
-10px) says so. The cost throughout is honest position error, not a lost frame: the
-report pulls inward to the outermost still-visible pixel, then snaps back out as the
-stroke slows.
+Robustness sweep (20 grain seeds x sway phases, not part of the committed suite):
+player-alone and idle-hang scenes reported **0 frames on 20/20 seeds**; still-pose
+tracking ≥98.6% found on 19/20 (one seed acquired late: 71.9% found, still 0
+stolen); median err 2.4-3.7px; 0 stolen anywhere.
 
 ## Wiring it in later
 
-1. `ObjectBlade.js`: add the import (`import * as tipDetector from "./detectTip.js";`)
-   and a mode switch, or make a small `TipBlade` clone of `ObjectBlade`. `_grab()`
-   stays as is; `enroll`/`detect` have the same signatures as `detectAuto`, but
-   `detect` returns `{x, y, quality} | null` (small-canvas px) instead of an axis.
-2. What `ObjectBlade.update()` would return in this mode:
-   `{ tipNorm: { x: hit.x / f.SW, y: hit.y / f.SH }, conf: hit.quality }` — no
-   `angle`, no `gripNorm`, no `endsNorm`. Endpoint pairing, hilt hysteresis and the
-   cos/sin angle filters are all unused; the detector already deadbands and coasts.
-3. `main.js` (katana branch): map the point through `mapPoint(tipNorm.x, tipNorm.y)`
-   — the exact same mapping the solo-mode index fingertip goes through
-   (`mapPoint(blade.x, blade.y)`) — and drive the game the way solo hand mode does:
-   a point cursor with a trail, through the existing fingertip smoothing. There is
-   no angle, so the two-endpoint blade draw does not apply.
+1. `enroll`/`detect` keep detectAuto's signatures; `detect` returns
+   `{x, y, quality} | null` (small-canvas px) instead of an axis.
+2. `ObjectBlade.update()` equivalent: `{ tipNorm: {x: hit.x/f.SW, y: hit.y/f.SH},
+   conf: hit.quality }` — no `angle`, no `gripNorm`, no `endsNorm`.
+3. `main.js` (katana branch): map through `mapPoint(tipNorm.x, tipNorm.y)` and
+   drive the game the way solo hand mode drives its fingertip cursor.
 
-## Known weaknesses
+## Known weaknesses — honest, current
 
-- **No angle.** It cannot draw a blade segment; it drives a cursor. That is the
-  entire trade.
-- **Tip-is-up prior is strong.** A sword held tip-DOWN cold-acquires the wrong end
-  until the first swing (continuity then carries the correct end through horizontal
-  and beyond). Same bet `hiltEnd` makes.
-- **The player is untested.** The synthetic room has no body. In a real scene the
-  body is foreground; its mass anchors the extremity search (probably helps), but a
-  head or raised elbow could steal cold acquisition while the sword hangs idle.
-  Enrolment waves the sword, motion and continuity recover it — unmeasured.
-- **Contrast-dead zones are blind**, same physics as axis mode: where the room sits
-  at blade luma (the crushed-black lower half, the door, the skateboards) there is
-  no foreground to find. The tip is only tracked where it differs from its backdrop.
-- **A multi-minute perfectly-still dwell** lets the slow room memory absorb the
-  blade; if it is then removed, a ghost tip can linger under the freeze disc until
-  real motion breaks it. A 2s dwell is measured clean; real hands tremble.
+- **No angle.** It drives a cursor, not a blade segment. That is the entire trade.
+- **Acquisition REQUIRES a raise.** The lock only bloods on upward-dominant
+  coherent travel with a visible shaft behind the tip. A sword held perfectly
+  still from frame 0, hanging idle, or entering horizontally is deliberately NOT
+  reported until first raised (~0.2s of raise). Silence was chosen over the
+  deployed build's behaviour of reporting the head. A sword raised behind the
+  player's silhouette (no clean shaft rows) bloods late or not at all — measured
+  once in 20 seeds as 72% found instead of ~100%.
+- **A bare fast-moving thin limb can in principle still blood** — a pointing
+  finger swept upward is shaped and moves like a blade. Both hands are on a
+  katana, so this is accepted; it did not occur in 20 seeds of swaying player.
+- **The synthetic player is one body.** One geometry, one shirt, one sway model —
+  built to match the measured room (head above the tip's rest height, raised
+  elbow, crushed lower half). A live player remains the real test; the mechanisms
+  (thinness, protrusion, blooding) are geometric, not tuned to this silhouette,
+  but the exact caps (W0=6, PROT=12, LONG rows 1-4/tot 9-14) are calibrated at
+  192x108 scale.
+- **Contrast-dead zones are blind**, same physics as axis mode: the blade over the
+  crushed lower half, the bed, the skateboards, or the player's own dark shirt
+  simply is not there. The still pose leaves ~19px of visible shaft above the bed
+  band; the blood walk needs ~15px of it.
+- **A multi-minute perfectly-still dwell** lets the slow room memory absorb blade
+  and body; the mass map then fades and gates lean on strict flicker only.
+  Blooding still requires a raise, so the failure mode is silence, not theft.
 - **A blade already in frame at frame 0 and never moving** is learned as furniture
-  (indistinguishable from it) and recovered on first motion — same trade as axis
-  mode.
+  and recovered on first motion — same trade as axis mode.

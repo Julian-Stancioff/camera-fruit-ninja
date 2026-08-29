@@ -421,7 +421,8 @@ function runBlurSwing({ n, blurPx, seed, person }) {
     const r = detect(p, W, H, model, prev);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     prev = r || null;
-    out.push({ r, ms, truth: truthTip(pivotPose(PX, PY, aM, LEN)) });
+    const bp = pivotPose(PX, PY, aM, LEN);
+    out.push({ r, ms, pose: bp, truth: truthTip(bp) });
   }
   return out;
 }
@@ -494,6 +495,17 @@ console.log("== 5. BUDGET (target: median < 3ms at 192x108) ==");
 console.log("== 6. THE PLAYER IN FRAME (head, shoulders, torso, raised elbow) ==");
 
 const onPlayer = (r) => dist([r.x, r.y], HEAD_C) < 15 || dist([r.x, r.y], ELBOW_TIP) < 9;
+// Distance from a report to the blade's AXIS segment. A blurred swing's report
+// legally retreats along the shaft to the outermost still-visible pixel (that is
+// the documented blur behaviour); when the blade passes over the raised arm, that
+// retreated-but-on-the-blade report must not be miscounted as "stolen".
+const distSeg = (r, pose) => {
+  const dx = Math.cos(pose.angle), dy = Math.sin(pose.angle);
+  const bx = pose.cx - (dx * pose.len) / 2, by = pose.cy - (dy * pose.len) / 2;
+  let t = (r.x - bx) * dx + (r.y - by) * dy;
+  t = Math.max(0, Math.min(pose.len, t));
+  return Math.hypot(r.x - (bx + dx * t), r.y - (by + dy * t));
+};
 const stolen = (rs) => rs.filter((s) => s.r &&
   (!s.pose || dist([s.r.x, s.r.y], truthTip(s.pose)) > 15) && onPlayer(s.r)).length;
 const personMs = [];
@@ -588,7 +600,8 @@ console.log("  6e blur sweep with the player in frame:");
     const errs = hits.map((s) => dist([s.r.x, s.r.y], s.truth));
     const rate = hits.length / res.length;
     const close = errs.filter((e) => e <= 10).length / res.length;
-    const bad = res.filter((s) => s.r && dist([s.r.x, s.r.y], s.truth) > 15 && onPlayer(s.r)).length;
+    const bad = res.filter((s) => s.r && dist([s.r.x, s.r.y], s.truth) > 15 &&
+      onPlayer(s.r) && distSeg(s.r, s.pose) > 4).length;
     console.log(`     blur ${String(B).padStart(2)}px  tracked ${(100 * rate).toFixed(1)}%  within 10px ${(100 * close).toFixed(1)}%` +
       `  tip err med ${n1(med(errs))}px p90 ${n1(p90(errs))}px worst ${n1(mx(errs))}px  stolen ${bad}`);
     check(`player-blur${B}`, bad === 0, `${bad} blurred reports stolen by the player`);
