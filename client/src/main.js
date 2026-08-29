@@ -744,11 +744,19 @@ function handleSplitHands(result, now, dtMs, freq) {
 // on rAF, not gated on the video-frame callback, not smoothed. This is that loop verbatim,
 // and the game just reads whatever it last produced.
 let tipTimer = null, latestTip = null, tipQ = 0, tipHits = 0;
+// Counters so the on-screen readout can say WHICH stage is failing rather than leaving us
+// to guess: is the loop running, is the camera delivering, is the detector returning null.
+const tipStat = { ticks: 0, hits: 0, rs: 0, err: "" };
 function startTipLoop() {
   stopTipLoop();
   tipTimer = setInterval(() => {
+    tipStat.rs = video.readyState;
     if (video.readyState < 2) return;
-    const r = objectBlade.update(video, 60);
+    tipStat.ticks++;
+    let r = null;
+    try { r = objectBlade.update(video, 60); }
+    catch (e) { tipStat.err = String(e && e.message || e).slice(0, 60); }
+    if (r) tipStat.hits++;
     latestTip = r ? r.tipNorm : null;
     tipQ = r ? (r.conf ?? 0) : 0;
     tipHits = r ? tipHits + 1 : 0;
@@ -810,7 +818,9 @@ function katanaTick(now) {
       return;
     }
     $("kat-status").textContent = "Now raise the sword \u2694";
-    $("kat-sub").textContent = latestTip ? "got it\u2026" : "Hold it up, clear of your body";
+    $("kat-sub").textContent =
+      `${latestTip ? "got it" : "looking"} — ticks ${tipStat.ticks} · hits ${tipStat.hits}` +
+      ` · cam ${tipStat.rs}${tipStat.err ? " · ERR " + tipStat.err : ""}`;
   }
 
   octx.clearRect(0, 0, window.innerWidth, window.innerHeight);
