@@ -261,6 +261,15 @@ async function start() {
     $("start-screen").classList.add("gone");
     overlay.classList.add("overlay-top"); // keep trail + PiP hand-mapping above the camera PiP
     if (DEBUG) $("hud").hidden = false; // dev HUD only with ?debug
+    // ?tipprobe — run the live tracking diagnostic instead of the game. Dynamically
+    // imported so it is a separate chunk and costs a normal round nothing.
+    if (PARAMS.has("tipprobe")) {
+      $("start-screen").classList.add("gone");
+      const { runTipProbe } = await import("./debug/tipProbe.js");
+      runTipProbe(video);
+      return;
+    }
+
     running = true;
     startVideoFrames();
     startLoop();
